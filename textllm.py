@@ -25,7 +25,7 @@ from langchain_core.messages import (
     merge_message_runs,
 )
 
-__version__ = "0.0.4"
+__version__ = "0.0.5"
 
 log = logging.getLogger("textllm")
 
@@ -87,7 +87,7 @@ class Conversation:
         else:
             log.debug(f"Could not load env. ${TEXTLLM_ENV_PATH = }")
 
-        self.filepath = filepath
+        self.filepath = self.filepath0 = filepath
 
         # Read and truncate file. Do it now in case the title is updated
         with open(self.filepath, "rb+") as fp:
@@ -339,6 +339,8 @@ class NoHumanMessageError(ValueError):
 
 
 def cli(argv=None):
+    if not argv:
+        argv = sys.argv[1:]
 
     parser = argparse.ArgumentParser(
         description="Simple LLM interface that reads and writes to a text file",
@@ -440,10 +442,14 @@ def cli(argv=None):
 
     edit.add_argument(
         "--edit",
-        action="store_true",
+        action="count",
         help="""
             Open an interactive editor with the file. Will try $TEXTLLM_EDITOR, then
             $EDITOR, then finally fallback to 'vi'.
+            
+            If specified twice, it will repeat the call to act like an interactive chat.
+            Note that to exit, just exit the editor without saving. %(prog)s will attempt
+            to replace the initial name with the new name if --rename is set.
         """,
     )
 
@@ -462,9 +468,10 @@ def cli(argv=None):
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     console_handler.setFormatter(fmt)
-    log.addHandler(console_handler)
+    if not log.hasHandlers():
+        log.addHandler(console_handler)
 
-    log.debug(f"argv: {sys.argv[1:]}")
+    log.debug(f"{argv = }")
     log.debug(f"{args = }")
 
     filepath = args.conversation
@@ -514,6 +521,29 @@ def cli(argv=None):
 
         if args.rename:
             convo.rename_by_title()
+
+        if args.edit > 1:
+            # Remove '--prompt' and the next arg
+            if "--prompt" in argv:
+                ix = argv.index("--prompt")
+                del argv[ix : ix + 2]
+                log.info("Removed --prompt")
+
+            # Replace the filename if needed. Error if it can't
+            if args.rename and not convo.filepath0 == convo.filepath:
+                if argv.count(convo.filepath0) != 1:
+                    raise ValueError(
+                        "Could not repeat because the filename cannot be uniquely "
+                        "identified in the arguments."
+                    )
+                ix = argv.index(convo.filepath0)
+                argv[ix] = convo.filepath
+                log.debug(
+                    f"Replaced {convo.filepath0!r} with {convo.filepath!r} @ {ix}"
+                )
+
+            # Recursive call back to the cli.
+            cli(argv)
 
         if RETURN_AFTER_CLI_FOR_DEVEL:
             return convo

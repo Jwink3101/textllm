@@ -68,10 +68,14 @@ Most behavior is governed by command-line flags but there are a few exceptions.
 
 | Variable | Description |
 |--|--|
-|`$TEXTLLM_ENV_PATH` | Path to an environment file for API keys. |
+|`$TEXTLLM_ENV_PATH` | Path to an environment file for API keys. They can also just be set directly.|
 |`$TEXTLLM_AUTO_RENAME` | Set to "true" to make `--rename` the *default*. Command-line settings will override. |
 | `$TEXTLLM_STREAM` | Set to "true" to make `--stream` the *default*. Command-line settings will override. |
 | `$TEXTLLM_EDITOR` | Set the editor for the `--edit` flag. Will fallback to `$EDITOR` then finally `vi`. |
+
+textllm uses [python-dotenv](https://github.com/theskumar/python-dotenv) to read `$TEXTLLM_ENV_PATH` but this also means you can have a `.env` file read automatically.
+
+[dotenv]:https://github.com/theskumar/python-dotenv
 
 ## Other Models
 

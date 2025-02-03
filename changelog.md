@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.5 (2025-02-03)
+
+Made it so if you specify `--edit --edit`, it will create a recursive loop calling the editor after each chat too. This makes it *almost* like an interactive chat. To exit, just exit the editor without saving. Note that `--prompt` is only applied on the first round.
+
+Also some documentation tweaks.
+
 ## 0.0.4 (2025-02-02)
 
 - Added `--stream / --no-stream` to stream the model output to stdout in addition to the file.
