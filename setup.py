@@ -26,7 +26,7 @@ setup(
     description="Simple text file based interface to LLMs",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    # url="https://github.com/Jwink3101/textllm",
+    url="https://github.com/Jwink3101/textllm",
     packages=find_packages(),
     py_modules=["textllm"],
     classifiers=[
