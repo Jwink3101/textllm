@@ -25,7 +25,7 @@ from langchain_core.messages import (
     merge_message_runs,
 )
 
-__version__ = "0.0.5"
+__version__ = "0.1.1"
 
 log = logging.getLogger("textllm")
 
@@ -80,13 +80,6 @@ RETURN_AFTER_CLI_FOR_DEVEL = False
 
 class Conversation:
     def __init__(self, filepath):
-
-        if load_dotenv(TEXTLLM_ENV_PATH):
-            # $TEXTLLM_ENV_PATH defaults to None to look in the parent dir.
-            log.debug(f"Loaded env. ${TEXTLLM_ENV_PATH = }")
-        else:
-            log.debug(f"Could not load env. ${TEXTLLM_ENV_PATH = }")
-
         self.filepath = self.filepath0 = filepath
 
         # Read and truncate file. Do it now in case the title is updated
@@ -364,6 +357,13 @@ def cli(argv=None):
     )
 
     parser.add_argument(
+        "--env",
+        help="""
+            Specify an additional environment file to load. Note, %(prog)s will 
+            also look for a .env file and from $TEXTLLM_ENV_PATH""",
+    )
+
+    parser.add_argument(
         "--title",
         choices=["auto", "only", "off"],
         default="auto",
@@ -443,6 +443,7 @@ def cli(argv=None):
     edit.add_argument(
         "--edit",
         action="count",
+        default=0,
         help="""
             Open an interactive editor with the file. Will try $TEXTLLM_EDITOR, then
             $EDITOR, then finally fallback to 'vi'.
@@ -474,9 +475,23 @@ def cli(argv=None):
     log.debug(f"{argv = }")
     log.debug(f"{args = }")
 
+    # Load the environment. Can be in three possible places (a,b,c below)
+    if TEXTLLM_ENV_PATH:  # (a) Specified environment variable with the path
+        if load_dotenv(TEXTLLM_ENV_PATH):
+            log.debug(f"Loaded env from ${TEXTLLM_ENV_PATH = }")
+        else:
+            log.info(f"Could not load env from specified ${TEXTLLM_ENV_PATH = }")
+    if load_dotenv():  # (b) a .env file
+        log.debug(f"Loaded env from a found '.env' file")
+    if args.env:  # (c) specified --env at the command line
+        if load_dotenv(args.env):
+            log.debug(f"Loaded env from args {args.env!r}")
+        else:
+            log.info(f"env file {args.env!r} not loaded or found")
+
     filepath = args.conversation
 
-    # Hanle edit modes.
+    # Handle edit modes.
     args.prompt = args.prompt.strip()
     if args.prompt == "-":
         log.debug("reading stdin")

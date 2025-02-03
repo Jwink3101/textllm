@@ -73,9 +73,20 @@ Most behavior is governed by command-line flags but there are a few exceptions.
 | `$TEXTLLM_STREAM` | Set to "true" to make `--stream` the *default*. Command-line settings will override. |
 | `$TEXTLLM_EDITOR` | Set the editor for the `--edit` flag. Will fallback to `$EDITOR` then finally `vi`. |
 
-textllm uses [python-dotenv](https://github.com/theskumar/python-dotenv) to read `$TEXTLLM_ENV_PATH` but this also means you can have a `.env` file read automatically.
+textllm uses [python-dotenv][dotenv] to read `$TEXTLLM_ENV_PATH` but this also means you can have a `.env` file read automatically.
 
-[dotenv]:https://github.com/theskumar/python-dotenv
+
+
+### API Environment Variables and loading
+
+Most APIs called by LangChain require the API key be in the environment. For example `$OPENAI_API_KEY`, `$ANTHROPIC_API_KEY`, `$GOOGLE_API_KEY`.
+
+These can be specified, as normal, outside of textllm, but you can also store them in a file. You can tell textllm where to find that file in any (or all) of three ways:
+
+1. Set environment variable `$TEXTLLM_ENV_PATH`
+2. Create a `.env` file for [python-dotenv][dotenv] to find
+3. The `--env` command-line argument.
+
 
 ## Other Models
 
@@ -133,6 +144,7 @@ Generally, you want the final block to be the new "User" question but it doesn't
 You can escape a block with a leading "\". It will be done if somehow the response also has such a block.
 
 
+[dotenv]:https://github.com/theskumar/python-dotenv
 [toml]: https://toml.io/ 
 [init_chat_model]: https://python.langchain.com/api_reference/langchain/chat_models/langchain.chat_models.base.init_chat_model.html
 [chat models]: https://python.langchain.com/docs/integrations/chat/
