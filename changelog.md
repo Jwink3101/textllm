@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0 (2025-02-04)
+
+- Changed default to `--stream`
+- Added a tester. It's not perfect but it covers most cases
+
+Minor:
+
+- More robust parsing of settings
+
 ## 0.1.1 (2025-02-03)
 
 (Bumping second digit. Should have done 0.1.0 instead of 0.0.5)

@@ -75,8 +75,6 @@ Most behavior is governed by command-line flags but there are a few exceptions.
 
 textllm uses [python-dotenv][dotenv] to read `$TEXTLLM_ENV_PATH` but this also means you can have a `.env` file read automatically.
 
-
-
 ### API Environment Variables and loading
 
 Most APIs called by LangChain require the API key be in the environment. For example `$OPENAI_API_KEY`, `$ANTHROPIC_API_KEY`, `$GOOGLE_API_KEY`.
@@ -117,7 +115,7 @@ Generally, this is only set once, but if "!!AUTO TITLE!!" is added back to the f
 
 ### (2) Settings
 
-Optionally specify settings for the object in [TOML][toml] format inside of a Markdown fenced code block. Do NOT modify the leading comments, as they are needed for the correct parsing. All settings are directly passed, including 'model'. The model should be in the format of "<provider>:<name>" where providers are those from LangChain. See [`init_chat_model` docs][init_chat_model] for the naming scheme and needed Python package and [Chat Models][chat models] for more details.
+Specify settings for the object in [TOML][toml] format inside of a Markdown fenced code block. All settings are directly passed, including 'model'. The model should be in the format of "<provider>:<name>" where providers are those from LangChain. See [`init_chat_model` docs][init_chat_model] for the naming scheme and needed Python package and [Chat Models][chat models] for more details. The template settings are the default and these update them.
 
 Note that they require an API key. It can be specified in the settings or can be set with an environment variable. Alternatively, an environment file can be specified with '$TEXTLLM_ENV_PATH' that may contain all API keys.
 

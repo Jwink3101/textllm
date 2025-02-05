@@ -25,14 +25,14 @@ from langchain_core.messages import (
     merge_message_runs,
 )
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 log = logging.getLogger("textllm")
 
 # Environment variable configs for defaults
 TEXTLLM_ENV_PATH = os.environ.get("TEXTLLM_ENV_PATH", None)
 TEXTLLM_AUTO_RENAME = os.environ.get("TEXTLLM_AUTO_RENAME", "").lower() == "true"
-TEXTLLM_STREAM = os.environ.get("TEXTLLM_STREAM", "").lower() == "true"
+TEXTLLM_STREAM = os.environ.get("TEXTLLM_STREAM", "true").lower() == "true"
 TEXTLLM_EDITOR = os.environ.get("TEXTLLM_EDITOR", os.environ.get("EDITOR", "vi"))
 
 AUTO_TITLE = "!!AUTO TITLE!!"
@@ -69,13 +69,18 @@ Provide an appropriate, consice, title for this conversation. The conversation i
 
 MAX_FILENAME_CHAR = 240
 
-flag2role = {
+FLAG2ROLE = {
     "--- system ---": SystemMessage,
     "--- user ---": HumanMessage,
     "--- assistant ---": AIMessage,
 }
 
-RETURN_AFTER_CLI_FOR_DEVEL = False
+CONVO_PATTERN = re.compile(
+    "(" + "|".join("^" + re.escape(flag) for flag in FLAG2ROLE) + ")",
+    flags=re.DOTALL | re.MULTILINE | re.IGNORECASE,
+)
+
+TEST_MODE = False
 
 
 class Conversation:
@@ -154,13 +159,9 @@ class Conversation:
         # Not really needed but in case I do more with it later
         self.messages.append(response)
 
-        # Add escapes to the content
+        # Add escapes to flags in the content
         content = response.content
-        pattern = re.compile(
-            "(" + "|".join("^" + re.escape(flag) for flag in flag2role) + ")",
-            flags=re.DOTALL | re.MULTILINE | re.IGNORECASE,
-        )
-        content = pattern.sub(r"\\\1", content)
+        content = CONVO_PATTERN.sub(r"\\\1", content)
 
         with open(self.filepath, "at") as fp:
             fp.write("\n\n--- Assistant ---\n\n")
@@ -180,7 +181,6 @@ class Conversation:
             SystemMessage(content=TITLE_SYSTEM_PROMPT),
             HumanMessage(content=json.dumps(messages)),
         ]
-
         response = self.call_llm(messages=new, temperature=0.1)
         title = response.content
 
@@ -199,16 +199,21 @@ class Conversation:
 
     @staticmethod
     def read_settings(text):
+        split_text = CONVO_PATTERN.split(text)
+        # If the first element is a flag, there is no top matter
+        if split_text[0].lower() in FLAG2ROLE:
+            log.debug("No top matter")
+            # return {}
+
+        top = split_text[0]
 
         pattern = re.compile(
-            r"```toml\s*"
-            r"# Optional Settings\s*"
-            r"(.*?)"
-            r"^# END Optional Settings\s*"
-            r"```",
-            flags=re.DOTALL | re.MULTILINE,
+            r"^```toml\s*" r"(.*?)" r"^```",
+            flags=re.DOTALL | re.MULTILINE | re.IGNORECASE,
         )
-        match = pattern.search(text)
+
+        match = pattern.search(top)  # First one only
+
         if match:
             toml_content = match.group(1).strip()
             return tomllib.loads(toml_content)  # Parse as TOML
@@ -216,19 +221,14 @@ class Conversation:
         return {}
 
     def read_conversation(self):
-        conversation = []
+        split_text = CONVO_PATTERN.split(self.text)
 
-        pattern = re.compile(
-            "(" + "|".join("^" + re.escape(flag) for flag in flag2role) + ")",
-            flags=re.DOTALL | re.MULTILINE | re.IGNORECASE,
-        )
-
-        split_text = pattern.split(self.text)
-
-        # Decide if the first item is a flag. It likely isn't but could be!
-        if split_text[0].lower() not in flag2role:
+        # Split will split at the flags. If the first item is a flag, then there is no
+        # top matter. If it isn't a flag, the first item is top matter.
+        if split_text[0].lower() not in FLAG2ROLE:
             del split_text[0]
 
+        conversation = []
         for flag, msg in grouper(split_text, 2):
             msg = msg.strip()
             if not msg:
@@ -237,11 +237,11 @@ class Conversation:
             # Clean up and unescape
             msg_lines = []
             for line in msg.strip().split("\n"):
-                if any(line.lower().startswith(rf"\{flag}") for flag in flag2role):
+                if any(line.lower().startswith(rf"\{flag}") for flag in FLAG2ROLE):
                     line = line[1:]
                 msg_lines.append(line)
 
-            conversation.append(flag2role[flag.lower()](content="\n".join(msg_lines)))
+            conversation.append(FLAG2ROLE[flag.lower()](content="\n".join(msg_lines)))
 
         return merge_message_runs(conversation)
 
@@ -313,7 +313,9 @@ def file_edit(filepath, *, prompt, editor):
 
     if editor:
         # Use shlex.split in case there are flags with the environment variable
-        subprocess.check_call(shlex.split(TEXTLLM_EDITOR) + [filepath])
+        editcmd = shlex.split(TEXTLLM_EDITOR) + [filepath]
+        log.debug(f"Calling: {editcmd!r}")
+        subprocess.check_call(editcmd)
 
     size1 = os.path.getsize(filepath)
     mtime1 = os.path.getmtime(filepath)
@@ -407,7 +409,8 @@ def cli(argv=None):
         default=TEXTLLM_STREAM,
         help=f"""
             Whether or not to stream the model response to stdout in addition to
-            writing it to file. Default is based on environment variable whether $TEXTLLM_STREAM == "true". Currently %(default)s
+            writing it to file. Default is based on environment variable whether 
+            $TEXTLLM_STREAM == "true". Currently %(default)s
         """,
     )
 
@@ -437,7 +440,10 @@ def cli(argv=None):
         "--prompt",
         metavar="text",
         default="",
-        help="Prompt text to add. If combined with --edit, this will be added first. Specify as '-' to read stdin.",
+        help="""
+            Prompt text to add. If combined with --edit, this will be added first. 
+            Specify as '-' to read stdin.
+        """,
     )
 
     edit.add_argument(
@@ -461,16 +467,26 @@ def cli(argv=None):
     level_index = args.verbose - args.silent + 2  # +1: WARNING, +2: INFO
     level_index = max(0, min(level_index, len(levels) - 1))  # Always keep ERROR
 
-    log.setLevel(levels[level_index])
-
-    console_handler = logging.StreamHandler()
+    log.setLevel(logging.DEBUG)  # Highest. Handler will set lower
     fmt = logging.Formatter(
         "%(asctime)s:%(levelname)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    console_handler = logging.StreamHandler()
     console_handler.setFormatter(fmt)
-    if not log.hasHandlers():
-        log.addHandler(console_handler)
+    console_handler.setLevel(levels[level_index])
+
+    log.handlers.clear()
+    log.addHandler(console_handler)
+    if TEST_MODE:
+        try:
+            os.makedirs(os.path.dirname(args.conversation))
+        except OSError:
+            pass
+        file_handler = logging.FileHandler(f"{args.conversation}.log", mode="w")
+        file_handler.setFormatter(fmt)
+        file_handler.setLevel(logging.DEBUG)
+        log.addHandler(file_handler)
 
     log.debug(f"{argv = }")
     log.debug(f"{args = }")
@@ -513,21 +529,22 @@ def cli(argv=None):
             log.info(f"{filepath!r} does not exist. Created template.")
 
             if not edit_mode:
-                sys.exit()
+                return
         else:
             log.debug(f"{filepath!r} exists")
 
         if edit_mode and not file_edit(filepath, prompt=args.prompt, editor=args.edit):
             # edit returns True iff it was modified.
-            log.info("File not modified. Exit")
-            sys.exit(1)
+            raise ValueError("File not modified")
 
         convo = Conversation(filepath)
 
         if args.title != "off":
             convo.set_title()  # Will do nothing if AUTO_TITLE not in the top line
         if args.title == "only":
-            return convo
+            if TEST_MODE:
+                return convo
+            return
 
         convo.chat(
             require_user_prompt=args.require_user_prompt,
@@ -560,13 +577,14 @@ def cli(argv=None):
             # Recursive call back to the cli.
             cli(argv)
 
-        if RETURN_AFTER_CLI_FOR_DEVEL:
+        if TEST_MODE:
             return convo
 
     except Exception as E:
         log.error(E)
         if levels[level_index] == logging.DEBUG:
             raise
+        sys.exit(1)
 
 
 if __name__ == "__main__":
