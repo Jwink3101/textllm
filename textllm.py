@@ -25,7 +25,7 @@ from langchain_core.messages import (
     merge_message_runs,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 log = logging.getLogger("textllm")
 
@@ -41,11 +41,8 @@ TEMPLATE = f"""\
 
 ```toml
 # Optional Settings
-# TOML Format
 temperature = 0.5
 model = "openai:gpt-4o"
-
-# END Optional Settings
 ```
 
 --- System ---
@@ -79,6 +76,8 @@ CONVO_PATTERN = re.compile(
     "(" + "|".join("^" + re.escape(flag) for flag in FLAG2ROLE) + ")",
     flags=re.DOTALL | re.MULTILINE | re.IGNORECASE,
 )
+
+DEFAULT_FILEPATH = "New Conversation.md"
 
 TEST_MODE = False
 
@@ -208,15 +207,23 @@ class Conversation:
         top = split_text[0]
 
         pattern = re.compile(
-            r"^```toml\s*" r"(.*?)" r"^```",
-            flags=re.DOTALL | re.MULTILINE | re.IGNORECASE,
+            r"""
+                ^```          # Start of line with fenced code block
+                \s*           # Optional whitespace
+                (?:toml)?     # Optional designation as TOML
+                \s*$          # Optional whitespace to end of line
+                \n            # At least one new line
+                (.*?)         # Actual TOML code (non-greedy)
+                \n            # New line before closing fence
+                ^```          # Closing fence on its own line
+                \s*$          # Optional whitespace to end of line
+            """,
+            flags=re.VERBOSE | re.DOTALL | re.MULTILINE | re.IGNORECASE,
         )
 
-        match = pattern.search(top)  # First one only
-
-        if match:
+        if match := pattern.search(top):  # First one only
             toml_content = match.group(1).strip()
-            return tomllib.loads(toml_content)  # Parse as TOML
+            return tomllib.loads(toml_content)
 
         return {}
 
@@ -247,12 +254,7 @@ class Conversation:
 
     def rename_by_title(self):
         dirname = os.path.dirname(self.filepath)
-
-        # Clean the current for possible "<name> (n).<ext>"
-        base, ext = os.path.splitext(self.filepath)
-        cleaned_filepath = re.sub(r" \(\d+\)$", "", base) + ext
-        cleaned_filename = os.path.basename(cleaned_filepath)
-        log.debug(f"{cleaned_filename = }")
+        ext = os.path.splitext(self.filepath)[1]
 
         # Compute the new name without worrying about duplicates
         title, *_ = self.text.split("\n", 1)
@@ -261,33 +263,22 @@ class Conversation:
             log.warning(f"{AUTO_TITLE!r} in title. Not renaming!")
             return
 
-        # Sub unsafe or invalid characters
-        invalid_chars = set(
-            "\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12\x13"
-            '\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f"*/:<>?\\|'
-        )
-        title = title.strip().strip("#").strip()
-        title_based_filebase = "".join(c for c in title if c not in invalid_chars)
-        title_based_filebase = title_based_filebase[: (MAX_FILENAME_CHAR - len(ext))]
-        title_based_filename = title_based_filebase + ext
+        # Clean the current for possible "<name> (n).<ext>"
+        cleaned_filepath = clean_filepath(self.filepath)
+        cleaned_filename = os.path.basename(cleaned_filepath)
+        log.debug(f"{cleaned_filename = }")
+
+        # Create a filename from the title
+        title_based_filename = title2filename(title, ext=ext)
         title_based_filepath = os.path.join(dirname, title_based_filename)
         log.debug(f"{title_based_filename = }")
         if cleaned_filename == title_based_filename:
             log.debug("Already named by title. No action needed")
             return
 
-        # Ensure it is unique by added " (n)" up to 99
-        c = 0
-        while os.path.exists(title_based_filepath):
-            c += 1
-            if c >= 100:
-                raise ValueError(f"Too many for {title_based_filebase + ext!r}")
-
-            new = f"{title_based_filebase} ({c}){ext}"
-            title_based_filepath = os.path.join(dirname, new)
-        log.debug(f"Required {c} iterations for unique name")
-
+        title_based_filepath = uniqueify_filepath(title_based_filepath)
         shutil.move(self.filepath, title_based_filepath)
+
         log.info(f"Rename by title {self.filepath!r} --> {title_based_filepath!r}")
         self.filepath = title_based_filepath
 
@@ -324,6 +315,52 @@ def file_edit(filepath, *, prompt, editor):
     return True
 
 
+########################################
+############ Filename Utils ############
+########################################
+def clean_filepath(filepath):
+    """'/path/to/file (1).ext --> '/path/to/file.ext'"""
+    base, ext = os.path.splitext(filepath)
+    cleaned_filepath = re.sub(r" \(\d+\)$", "", base) + ext
+    return cleaned_filepath
+
+
+def title2filename(title, ext=".md"):
+    """Take a title and process it to a filename."""
+    invalid_chars = set(
+        "\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12\x13"
+        '\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f"*/:<>?\\|'
+    )
+    title = title.strip().strip("#").strip()
+    title = "".join(c for c in title if c not in invalid_chars)
+    title = title[: (MAX_FILENAME_CHAR - len(ext))]
+    title = title + ext
+    return title
+
+
+def uniqueify_filepath(filepath):
+    """Ensure filepath doesn't exist by adding (n) to the name"""
+    filepath0 = filepath
+    dirname, filename = os.path.split(filepath)
+    base, ext = os.path.splitext(filename)
+
+    c = 0
+    while os.path.exists(filepath):
+        c += 1
+        if c >= 100:
+            raise ValueError(f"Too many for {filepath0!r}")
+
+        new = f"{base} ({c}){ext}"
+        filepath = os.path.join(dirname, new)
+    log.debug(f"{filepath0!r} required {c} iterations for unique name: {filepath!r}")
+    return filepath
+
+
+########################################
+########## END Filename Utils ##########
+########################################
+
+
 def grouper(iterable, n, *, fillvalue=None):
     iterators = [iter(iterable)] * n
     return itertools.zip_longest(*iterators, fillvalue="")
@@ -334,7 +371,7 @@ class NoHumanMessageError(ValueError):
 
 
 def cli(argv=None):
-    if not argv:
+    if argv is None:
         argv = sys.argv[1:]
 
     parser = argparse.ArgumentParser(
@@ -344,18 +381,14 @@ def cli(argv=None):
     )
 
     parser.add_argument(
-        "conversation",
-        help="""
-            Input file in the noted format. If it does not exists, the template will
-            instead be written there (unless --no-create)
+        "filepath",
+        nargs="?",
+        default=None,
+        help=f"""
+            Input file in the noted format. If unspecified, default is {DEFAULT_FILEPATH!r},
+            potentially incremented such that it is unique. If an *existing* directory
+            is specified, {DEFAULT_FILEPATH!r} will be placed there.
             """,
-    )
-
-    parser.add_argument(
-        "--create",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Whether or not to create a file with a template if no file exists",
     )
 
     parser.add_argument(
@@ -378,8 +411,8 @@ def cli(argv=None):
     )
 
     parser.add_argument(
-        "--u",  # To make --no-u an easy option
         "--require-user-prompt",
+        "--u",  # To make --no-u an easy option
         dest="require_user_prompt",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -393,13 +426,13 @@ def cli(argv=None):
         "--rename",
         "--move",
         action=argparse.BooleanOptionalAction,
-        default=TEXTLLM_AUTO_RENAME,
+        default=None,
         help=f"""
             Rename the file based on the title. The title must NOT have {AUTO_TITLE!r}
-            in the title. Note that the automatic title generation will happen first if 
-            set. Will increment the file if one already exists. Default is based
-            on environment variable whether $TEXTLLM_AUTO_RENAME == "true". Currently 
-            %(default)s
+            in it. Will increment the filename as needed if one already exists.
+            If a filename is specified, defaults to whether $TEXTLLM_AUTO_RENAME == "true"
+            (currently {TEXTLLM_AUTO_RENAME}). If filename is not specified, defaults to True. 
+            Setting the flag overrides the behavior in both cases.
         """,
     )
 
@@ -409,8 +442,8 @@ def cli(argv=None):
         default=TEXTLLM_STREAM,
         help=f"""
             Whether or not to stream the model response to stdout in addition to
-            writing it to file. Default is based on environment variable whether 
-            $TEXTLLM_STREAM == "true". Currently %(default)s
+            writing it to file. Defaults to true unless environment variable
+            $TEXTLLM_STREAM == "false". Currently %(default)s.
         """,
     )
 
@@ -433,8 +466,8 @@ def cli(argv=None):
         description="""
             These options let you add the prompt and/or edit the file directly
             before calling the LLM. Note it is assumed that a '--- User ---'
-            heading is present (as it should be by default). Either of these settings will
-            force --create.""",
+            heading is present (as it should be by default). 
+            """,
     )
     edit.add_argument(
         "--prompt",
@@ -448,15 +481,10 @@ def cli(argv=None):
 
     edit.add_argument(
         "--edit",
-        action="count",
-        default=0,
+        action="store_true",
         help="""
             Open an interactive editor with the file. Will try $TEXTLLM_EDITOR, then
             $EDITOR, then finally fallback to 'vi'.
-            
-            If specified twice, it will repeat the call to act like an interactive chat.
-            Note that to exit, just exit the editor without saving. %(prog)s will attempt
-            to replace the initial name with the new name if --rename is set.
         """,
     )
 
@@ -479,11 +507,12 @@ def cli(argv=None):
     log.handlers.clear()
     log.addHandler(console_handler)
     if TEST_MODE:
+        logfile = f"{args.filepath}.log" if args.filepath else "log"
         try:
-            os.makedirs(os.path.dirname(args.conversation))
+            os.makedirs(os.path.dirname(logfile))
         except OSError:
             pass
-        file_handler = logging.FileHandler(f"{args.conversation}.log", mode="w")
+        file_handler = logging.FileHandler(logfile, mode="w")
         file_handler.setFormatter(fmt)
         file_handler.setLevel(logging.DEBUG)
         log.addHandler(file_handler)
@@ -505,7 +534,14 @@ def cli(argv=None):
         else:
             log.info(f"env file {args.env!r} not loaded or found")
 
-    filepath = args.conversation
+    # Handle default --rename
+    if args.rename is None:
+        if args.filepath is None or os.path.isdir(args.filepath):
+            args.rename = True
+            log.debug("Settings --rename because no filename specified")
+        else:
+            args.rename = TEXTLLM_AUTO_RENAME
+            log.debug(f"Setting --rename to {TEXTLLM_AUTO_RENAME = }")
 
     # Handle edit modes.
     args.prompt = args.prompt.strip()
@@ -514,15 +550,18 @@ def cli(argv=None):
         args.prompt = sys.stdin.read().strip()
     edit_mode = bool(args.edit or args.prompt)
     log.debug(f"{edit_mode = }")
-    if edit_mode:
-        log.debug("setting --create")
-        args.create = True
 
     try:
-        if not os.path.exists(filepath):
-            if not args.create:
-                raise ValueError(f"{filepath!r} does not exist. Exit")
+        if args.filepath is None:
+            args.filepath = uniqueify_filepath(DEFAULT_FILEPATH)
+            log.debug(f"No filepath speciried. Set {args.filepath!r}")
+        elif os.path.isdir(args.filepath):
+            fp = os.path.join(args.filepath, DEFAULT_FILEPATH)
+            args.filepath = uniqueify_filepath(fp)
+            log.debug(f"Directory specified. Set {args.filepath!r}")
 
+        filepath = args.filepath
+        if not os.path.exists(filepath):
             Path(filepath).parent.mkdir(parents=True, exist_ok=True)
             with open(filepath, "xt") as fp:
                 fp.write(TEMPLATE)
@@ -554,35 +593,12 @@ def cli(argv=None):
         if args.rename:
             convo.rename_by_title()
 
-        if args.edit > 1:
-            # Remove '--prompt' and the next arg
-            if "--prompt" in argv:
-                ix = argv.index("--prompt")
-                del argv[ix : ix + 2]
-                log.info("Removed --prompt")
-
-            # Replace the filename if needed. Error if it can't
-            if args.rename and not convo.filepath0 == convo.filepath:
-                if argv.count(convo.filepath0) != 1:
-                    raise ValueError(
-                        "Could not repeat because the filename cannot be uniquely "
-                        "identified in the arguments."
-                    )
-                ix = argv.index(convo.filepath0)
-                argv[ix] = convo.filepath
-                log.debug(
-                    f"Replaced {convo.filepath0!r} with {convo.filepath!r} @ {ix}"
-                )
-
-            # Recursive call back to the cli.
-            cli(argv)
-
         if TEST_MODE:
             return convo
 
     except Exception as E:
         log.error(E)
-        if levels[level_index] == logging.DEBUG:
+        if levels[level_index] == logging.DEBUG or TEST_MODE:
             raise
         sys.exit(1)
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+- Made specifying a filename optional. Instead, will create a new file. If an *existing* directory is specified, will create the new file there.
+    - `--rename` defaults to True if a new file is created. Still defaults to `$TEXTLLM_AUTO_RENAME` otherwise which itself defaults to False
+- Removed `--create` setting. Specifying a new file is all that is needed.
+- Removed the double `--edit` where it opened up again. I think it's not worth it. Better to just have the user submit again.
+
 ## 0.2.0 (2025-02-04)
 
 - Changed default to `--stream`

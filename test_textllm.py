@@ -16,7 +16,7 @@ textllm.TEMPLATE = """\
 # !!AUTO TITLE!!
 
 ```toml
-temperature = 0.1
+temperature = 0.01
 model = "openai:gpt-4o-mini"
 ```
 
@@ -26,7 +26,8 @@ You are being used to test. You will respond to every call as follows:
 
 "X user messages. Last message ended with:"
 
-where X is just the user messages and the ending is the final word of the message.
+where X is just the user messages and the ending is the final word of the message. 
+Do NOT include final punctuation.
 
 --- User ---
 
@@ -75,11 +76,14 @@ class Capture:
 def run_cli(argv):
     # filepath MUST be first arg!!!
     if argv and argv[0].startswith("-"):
-        raise ValueError("filepath MUST come first")
+        logpath = "log"
+    else:
+        logpath = f"{argv[0]}.log" if argv else "log"  # assume it's first
+
     textllm.log.handlers.clear()
     with Capture() as cap:
         textllm.cli(argv)
-    logpath = f"{argv[0]}.log"  # assume it's first
+
     with open(logpath) as fp:
         log = fp.read()
     return cap.out, log
@@ -181,5 +185,103 @@ def test_main():
     #                                  ^^^ 2, not 1
 
 
+def test_auto_names():
+    def _clean():
+        for item in Path(".").glob("New Conversation*.md"):
+            item.unlink()
+        for item in Path(".").glob("title set automatically*.md"):
+            item.unlink()
+        try:
+            shutil.rmtree("testdir/")
+        except OSError:
+            pass
+
+    _clean()
+    os.makedirs("testdir")
+
+    try:
+        textllm.cli([])
+        assert os.path.exists("New Conversation.md")
+
+        out, log = run_cli([])
+        assert os.path.exists("New Conversation.md")
+        assert os.path.exists("New Conversation (1).md")
+
+        out, log = run_cli([])
+        assert os.path.exists("New Conversation.md")
+        assert os.path.exists("New Conversation (1).md")
+        assert os.path.exists("New Conversation (2).md")
+
+        out, log = run_cli(["testdir"])
+        assert os.path.exists("testdir/New Conversation.md")
+
+        out, log = run_cli(["testdir"])
+        assert os.path.exists("testdir/New Conversation.md")
+        assert os.path.exists("testdir/New Conversation (1).md")
+
+        out, log = run_cli(["testdir/create/this/file.md"])
+        assert os.path.exists("testdir/create/this/file.md")
+
+        out, log = run_cli(["--prompt", "What time is it"])
+        text = Path("title set automatically.md").read_text().strip()
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        assert (
+            out.strip() == lines[-2] == "1 user messages. Last message ended with: it"
+        )
+
+        out, log = run_cli(["--prompt", "How are you"])
+        text = Path("title set automatically (1).md").read_text().strip()
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        assert (
+            out.strip() == lines[-2] == "1 user messages. Last message ended with: you"
+        )
+
+        out, log = run_cli(["--prompt", "Where do I go", "testdir"])
+        text = Path("testdir/title set automatically.md").read_text().strip()
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        assert (
+            out.strip() == lines[-2] == "1 user messages. Last message ended with: go"
+        )
+
+        out, log = run_cli(["--prompt", "look up", "testdir"])
+        text = Path("testdir/title set automatically (1).md").read_text().strip()
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        assert (
+            out.strip() == lines[-2] == "1 user messages. Last message ended with: up"
+        )
+
+        # Make sure it doesn't create new on a specified file
+        out, log = run_cli(
+            ["--prompt", "hello there", "testdir/title set automatically (1).md"]
+        )
+        text = Path("testdir/title set automatically (1).md").read_text().strip()
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        assert (
+            out.strip()
+            == lines[-2]
+            == "2 user messages. Last message ended with: there"
+        )
+
+        # Other flags
+        out, log = run_cli(["--prompt", "look down", "--no-rename"])
+        text = Path("New Conversation (3).md").read_text().strip()
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        assert (
+            out.strip() == lines[-2] == "1 user messages. Last message ended with: down"
+        )
+
+        out, log = run_cli(["--prompt", "look left", "--title", "off"])
+        text = Path("New Conversation (4).md").read_text().strip()
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        assert (
+            out.strip() == lines[-2] == "1 user messages. Last message ended with: left"
+        )
+        assert "WARNING: '!!AUTO TITLE!!' in title. Not renaming!" in log
+
+    finally:
+        _clean()
+
+
 if __name__ == "__main__":
     test_main()
+    test_auto_names()
