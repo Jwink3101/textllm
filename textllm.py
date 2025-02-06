@@ -25,14 +25,12 @@ from langchain_core.messages import (
     merge_message_runs,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 log = logging.getLogger("textllm")
 
 # Environment variable configs for defaults
 TEXTLLM_ENV_PATH = os.environ.get("TEXTLLM_ENV_PATH", None)
-TEXTLLM_AUTO_RENAME = os.environ.get("TEXTLLM_AUTO_RENAME", "").lower() == "true"
-TEXTLLM_STREAM = os.environ.get("TEXTLLM_STREAM", "true").lower() == "true"
 TEXTLLM_EDITOR = os.environ.get("TEXTLLM_EDITOR", os.environ.get("EDITOR", "vi"))
 
 AUTO_TITLE = "!!AUTO TITLE!!"
@@ -47,7 +45,7 @@ model = "openai:gpt-4o"
 
 --- System ---
 
-You are a helpful assistant. Provide clear and thorough answers but be concise unless instructed otherwise.
+You are a helpful assistant. Provide concise, accurate answers.
 
 --- User ---
 
@@ -385,9 +383,10 @@ def cli(argv=None):
         nargs="?",
         default=None,
         help=f"""
-            Input file in the noted format. If unspecified, default is {DEFAULT_FILEPATH!r},
-            potentially incremented such that it is unique. If an *existing* directory
-            is specified, {DEFAULT_FILEPATH!r} will be placed there.
+            Specifies the input file in the noted format. If not provided, the default 
+            file {DEFAULT_FILEPATH!r} will be used, with an incremented filename to 
+            ensure uniqueness. If you specify an existing directory, {DEFAULT_FILEPATH!r} 
+            will be created in that directory.
             """,
     )
 
@@ -395,7 +394,9 @@ def cli(argv=None):
         "--env",
         help="""
             Specify an additional environment file to load. Note, %(prog)s will 
-            also look for a .env file and from $TEXTLLM_ENV_PATH""",
+            also look for a .env file and from $TEXTLLM_ENV_PATH. 
+            
+            Useful for storing API keys""",
     )
 
     parser.add_argument(
@@ -412,13 +413,12 @@ def cli(argv=None):
 
     parser.add_argument(
         "--require-user-prompt",
-        "--u",  # To make --no-u an easy option
         dest="require_user_prompt",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="""
-            Whether or not to require there be a user prompt at the end of 
-            the messages. Default %(default)s
+            [%(default)s] Whether or not to require there be a user prompt at the end of 
+            the messages.
         """,
     )
 
@@ -430,20 +430,17 @@ def cli(argv=None):
         help=f"""
             Rename the file based on the title. The title must NOT have {AUTO_TITLE!r}
             in it. Will increment the filename as needed if one already exists.
-            If a filename is specified, defaults to whether $TEXTLLM_AUTO_RENAME == "true"
-            (currently {TEXTLLM_AUTO_RENAME}). If filename is not specified, defaults to True. 
-            Setting the flag overrides the behavior in both cases.
+            If a filename is specified, default is False. If filename is not specified, default is True.
         """,
     )
 
     parser.add_argument(
         "--stream",
         action=argparse.BooleanOptionalAction,
-        default=TEXTLLM_STREAM,
+        default=True,
         help=f"""
-            Whether or not to stream the model response to stdout in addition to
-            writing it to file. Defaults to true unless environment variable
-            $TEXTLLM_STREAM == "false". Currently %(default)s.
+            [%(default)s] Whether or not to stream the model response to stdout in 
+            addition to writing it to file. 
         """,
     )
 
@@ -536,12 +533,8 @@ def cli(argv=None):
 
     # Handle default --rename
     if args.rename is None:
-        if args.filepath is None or os.path.isdir(args.filepath):
-            args.rename = True
-            log.debug("Settings --rename because no filename specified")
-        else:
-            args.rename = TEXTLLM_AUTO_RENAME
-            log.debug(f"Setting --rename to {TEXTLLM_AUTO_RENAME = }")
+        args.rename = args.filepath is None or os.path.isdir(args.filepath)
+        log.debug("Settings --rename to {args.rename}.")
 
     # Handle edit modes.
     args.prompt = args.prompt.strip()

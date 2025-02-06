@@ -69,8 +69,6 @@ Most behavior is governed by command-line flags but there are a few exceptions.
 | Variable | Description |
 |--|--|
 |`$TEXTLLM_ENV_PATH` | Path to an environment file for API keys. They can also just be set directly.|
-|`$TEXTLLM_AUTO_RENAME` | Set to "true" to make `--rename` the *default*. Command-line settings will override. If creating a new file, the environment variable setting is ignored and must be set at the command line.|
-| `$TEXTLLM_STREAM` | Set to "False" to make `--no-stream` the *default*. Command-line settings will override. Defaults to Trueq|
 | `$TEXTLLM_EDITOR` | Set the editor for the `--edit` flag. Will fallback to `$EDITOR` then finally `vi`. |
 
 textllm uses [python-dotenv][dotenv] to read `$TEXTLLM_ENV_PATH` but this also means you can have a `.env` file read automatically.
@@ -141,6 +139,13 @@ Generally, you want the final block to be the new "User" question but it doesn't
 
 You can escape a block with a leading "\". It will be done if somehow the response also has such a block.
 
+## Tips and Tricks
+
+### Open vim at Bottom
+
+If using `--edit` to edit the file before submitting, it would be nice to open at the bottom of the file. textllm will correctly handle flags in `$TEXTLLM_EDITOR` so you can do something like:
+
+    export TEXTLLM_EDITOR="vim +"
 
 [dotenv]:https://github.com/theskumar/python-dotenv
 [toml]: https://toml.io/ 

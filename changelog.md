@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.3.0
+## 0.4.0 (2025-02-05)
+
+- Removed environment settings `$TEXTLLM_AUTO_RENAME` and `$TEXTLLM_STREAM` because as I use it, I don't see the utility. `--rename` default is based on whether a file is specified. There is little reason to universally set --no-stream.
+
+Shorted the default system prompt and cleanup help message
+
+## 0.3.0 (2025-02-05)
 
 - Made specifying a filename optional. Instead, will create a new file. If an *existing* directory is specified, will create the new file there.
     - `--rename` defaults to True if a new file is created. Still defaults to `$TEXTLLM_AUTO_RENAME` otherwise which itself defaults to False
