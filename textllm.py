@@ -2,9 +2,11 @@
 # -*- coding: utf-8 -*-
 
 import argparse
+import base64
 import itertools
 import json
 import logging
+import mimetypes
 import os
 import re
 import shlex
@@ -25,7 +27,7 @@ from langchain_core.messages import (
     merge_message_runs,
 )
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 
 log = logging.getLogger("textllm")
 
@@ -249,7 +251,31 @@ class Conversation:
                     line = line[1:]
                 msg_lines.append(line)
 
-            conversation.append(FLAG2ROLE[flag.lower()](content="\n".join(msg_lines)))
+            msg, img_urls = process_msg_for_images(msg_lines)
+
+            content = [{"type": "text", "text": msg}]
+            for img_url in img_urls:
+                item = {"type": "image_url"}
+                if re.match("https?://.*", img_url, flags=re.IGNORECASE):
+                    item["image_url"] = {"url": img_url}
+                    log.debug(f"Found image with URL: {img_url!r}")
+                elif img_url.lower().startswith("data:"):
+                    item["image_url"] = {"url": img_url}
+                    log.debug(f"Found 'data:<...>' URL")
+                else:
+                    # Need to load it relative to the file
+                    img_path = os.path.join(os.path.dirname(self.filepath), img_url)
+                    mime_type, _ = mimetypes.guess_type(img_path)
+                    with open(img_path, "rb") as fp:
+                        data = fp.read()
+                        img_data = base64.b64encode(data).decode("utf-8")
+                        item["image_url"] = {
+                            "url": f"data:{mime_type};base64,{img_data}"
+                        }
+                    log.debug(f"Found image {img_path!r}, {len(data)} bytes")
+                content.append(item)
+
+            conversation.append(FLAG2ROLE[flag.lower()](content=content))
 
         return merge_message_runs(conversation)
 
@@ -314,6 +340,58 @@ def file_edit(filepath, *, prompt, editor):
     if size1 == size0 and abs(mtime1 - mtime0) <= 0.5:
         return False
     return True
+
+
+def process_msg_for_images(lines):
+    # Regex to capture markdown images
+    image_regex = re.compile(
+        r"""
+        ^               # Start of a line
+        !\[             # Literal '![', start of markdown image
+        (.*?)           # Non-greedy capture for the alt text (optional)
+        \]              # Literal closing bracket
+        \(\s*           # Literal '(', start of URL, allowing optional whitespace
+        (.*?)           # Non-greedy capture for the URL
+        \s*             # Allow optional whitespace
+        (?:             # Non-capturing group for optional title
+            "           # Opening quote for title
+            (.*?)       # Non-greedy capture for the title text
+            "           # Closing quote for title
+        )?              # Title is optional
+        \)              # Literal closing parenthesis
+        \s*$            # Allow optional whitespace till the end of the line
+        """,
+        re.VERBOSE,
+    )
+
+    in_code_block = False
+    final_lines = []
+    image_urls = []
+
+    for line in lines:
+        # Check for start or end of a fenced code block
+        if line.strip().startswith("```"):
+            in_code_block = not in_code_block
+            final_lines.append(line)
+            continue
+
+        # If inside a code block, just keep the line
+        if in_code_block:
+            final_lines.append(line)
+            continue
+
+        # If not inside a code block, check for images
+        match = image_regex.match(line)
+        if match:
+            # Capture the URL from the image line
+            url = match.group(2)
+            image_urls.append(url)
+        else:
+            # Keep lines that are not image lines
+            final_lines.append(line)
+
+    # Return the processed text and list of image URLs
+    return "\n".join(final_lines), image_urls
 
 
 ########################################

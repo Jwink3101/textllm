@@ -1,3 +1,4 @@
+import base64
 import io
 import os
 import shlex
@@ -349,7 +350,80 @@ def test_default_settings():
         clean()
 
 
+def test_images():
+    """
+    Test different image calling. filenames are flipped to make sure we don't get a false
+    positive
+    """
+    clean()
+
+    shutil.copytree("testresources/img", "testdir")
+
+    shutil.copy2("testdir/template.md", "testdir/one.md")
+    with open("testdir/one.md", "at") as fp:
+        fp.write(
+            dedent(
+                """
+            ![backup](traeh.png "My Title")
+            Describe this image
+            """
+            )
+        )
+
+    out, log = run_cli(["testdir/one.md"])
+    assert "heart" in out.lower()
+    assert "Found image 'testdir/traeh.png', 3405 bytes" in log  # Path relative to exe
+
+    shutil.copy2("testdir/template.md", "testdir/two.md")
+    with open("testdir/two.md", "at") as fp:
+        fp.write(
+            dedent(
+                """
+            Describe this image in ONE WORD:
+            ![](worra.jpg)
+            
+            Describe this image in two words:
+            ![backup](traeh.png "My Title")
+            
+            How many images were there?
+            """
+            )
+        )
+
+    out, log = run_cli(["testdir/two.md"])
+    #     assert "heart" in out.lower()
+    #     assert "arrow" in out.lower()
+    #     assert "two" in out.lower() or "2" in out.lower()
+    print("#" * 40 + f"\nMANUAL: {out}\n")
+
+    # Test context
+    out, log = run_cli(["testdir/two.md", "--prompt", "what color are they?"])
+    assert "blue" in out.lower()
+    assert "black" in out.lower()
+
+    # Test embedded images
+    shutil.copy2("testdir/template.md", "testdir/three.md")
+    with open("testdir/three.md", "at") as fp, open("testdir/worra.jpg", "rb") as img:
+        data = img.read()
+        bdata = base64.b64encode(data).decode()
+        fp.write(
+            dedent(
+                f"""
+                Describe this image. Make sure to include the color.
+                
+                ![Alt text](data:image/jpg;base64,{bdata})
+                """
+            )
+        )
+    out, log = run_cli(["testdir/three.md"])
+    assert "blue" in out.lower()
+    assert "Found 'data:<...>' URL" in log
+
+    clean()
+
+
 if __name__ == "__main__":
-    test_main()
-    test_auto_names()
-    test_default_settings()
+    # test_main()
+    # test_auto_names()
+    # test_default_settings()
+    test_images()

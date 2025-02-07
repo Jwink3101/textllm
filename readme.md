@@ -145,6 +145,10 @@ You can escape a block with a leading "\". It will be done if somehow the respon
 
 ## Tips and Tricks
 
+### Images
+
+You can include images in the Markdown in normal format. They can be used to ask questions about specific images.
+
 ### Open vim at Bottom
 
 If using `--edit` to edit the file before submitting, it would be nice to open at the bottom of the file. textllm will correctly handle flags in `$TEXTLLM_EDITOR` so you can do something like:

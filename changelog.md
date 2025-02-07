@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.0 (2025-02-05)
+
+Introduces (and tests) the ability to parse Markdown images
+
 ## 0.4.1 (2025-02-05)
 
 - Introduced `$TEXTLLM_DEFAULT_MODEL` and `$TEXTLLM_DEFAULT_TEMPERATURE` to control default behavior for *both* new template files and if it's not set
