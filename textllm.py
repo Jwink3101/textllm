@@ -25,13 +25,16 @@ from langchain_core.messages import (
     merge_message_runs,
 )
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 log = logging.getLogger("textllm")
 
 # Environment variable configs for defaults
 TEXTLLM_ENV_PATH = os.environ.get("TEXTLLM_ENV_PATH", None)
 TEXTLLM_EDITOR = os.environ.get("TEXTLLM_EDITOR", os.environ.get("EDITOR", "vi"))
+TEXTLLM_DEFAULT_MODEL = os.environ.get("TEXTLLM_DEFAULT_MODEL", "openai:gpt-4o")
+TEXTLLM_DEFAULT_TEMPERATURE = os.environ.get("TEXTLLM_DEFAULT_TEMPERATURE", 0.5)
+TEXTLLM_TEMPLATE_FILE = os.environ.get("TEXTLLM_TEMPLATE_FILE", None)
 
 AUTO_TITLE = "!!AUTO TITLE!!"
 TEMPLATE = f"""\
@@ -39,13 +42,13 @@ TEMPLATE = f"""\
 
 ```toml
 # Optional Settings
-temperature = 0.5
-model = "openai:gpt-4o"
+temperature = {float(TEXTLLM_DEFAULT_TEMPERATURE)}
+model = {TEXTLLM_DEFAULT_MODEL!r}
 ```
 
 --- System ---
 
-You are a helpful assistant. Provide concise, accurate answers.
+You are an expert assistant. Provide concise, accurate answers.
 
 --- User ---
 
@@ -557,7 +560,11 @@ def cli(argv=None):
         if not os.path.exists(filepath):
             Path(filepath).parent.mkdir(parents=True, exist_ok=True)
             with open(filepath, "xt") as fp:
-                fp.write(TEMPLATE)
+                if TEXTLLM_TEMPLATE_FILE:
+                    with open(TEXTLLM_TEMPLATE_FILE, "rt") as fp2:
+                        fp.write(fp2.read())
+                else:
+                    fp.write(TEMPLATE)
             log.info(f"{filepath!r} does not exist. Created template.")
 
             if not edit_mode:

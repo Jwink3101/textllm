@@ -70,8 +70,12 @@ Most behavior is governed by command-line flags but there are a few exceptions.
 |--|--|
 |`$TEXTLLM_ENV_PATH` | Path to an environment file for API keys. They can also just be set directly.|
 | `$TEXTLLM_EDITOR` | Set the editor for the `--edit` flag. Will fallback to `$EDITOR` then finally `vi`. |
+| `$TEXTLLM_DEFAULT_MODEL` | Sets the default model if one is not specified AND sets one in a template for new chats |
+| `$TEXTLLM_DEFAULT_TEMPERATURE` | Sets the default temperature if one is not specified AND sets one in a template for new chats |
+| `$TEXTLLM_TEMPLATE_FILE` | Sets a file to read for the template. This is used for new chats but *not* the defaults.
 
-textllm uses [python-dotenv][dotenv] to read `$TEXTLLM_ENV_PATH` but this also means you can have a `.env` file read automatically.
+
+textllm uses [python-dotenv][dotenv] to read `$TEXTLLM_ENV_PATH` but this also means you can have a `.env` file read automatically. These are read for executing the LLM only. Not for setting the above.
 
 ### API Environment Variables and loading
 

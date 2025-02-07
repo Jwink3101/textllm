@@ -2,6 +2,7 @@ import io
 import os
 import shlex
 import shutil
+import subprocess
 import sys
 from functools import cached_property
 from pathlib import Path
@@ -185,18 +186,20 @@ def test_main():
     #                                  ^^^ 2, not 1
 
 
-def test_auto_names():
-    def _clean():
-        for item in Path(".").glob("New Conversation*.md"):
-            item.unlink()
-        for item in Path(".").glob("title set automatically*.md"):
-            item.unlink()
-        try:
-            shutil.rmtree("testdir/")
-        except OSError:
-            pass
+def clean():
+    for item in Path(".").glob("New Conversation*.md"):
+        item.unlink()
+    for item in Path(".").glob("title set automatically*.md"):
+        item.unlink()
+    try:
+        shutil.rmtree("testdir/")
+    except OSError:
+        pass
 
-    _clean()
+
+def test_auto_names():
+
+    clean()
     os.makedirs("testdir")
 
     try:
@@ -279,9 +282,74 @@ def test_auto_names():
         assert "WARNING: '!!AUTO TITLE!!' in title. Not renaming!" in log
 
     finally:
-        _clean()
+        clean()
+
+
+def test_default_settings():
+    """
+    For these, we test with calling a different process. Ideally, we'd just call the
+    function (to get line coverage credit) but (a) it won't matter for the defaults
+    and (b) the global structure of them makes this more of a pain.
+    """
+    clean()
+    try:
+        os.makedirs("testdir")
+
+        env = os.environ.copy()
+        env["TEXTLLM_DEFAULT_MODEL"] = "this is made up"
+        env["TEXTLLM_DEFAULT_TEMPERATURE"] = "0.001"
+
+        subprocess.call([sys.executable, "textllm.py", "testdir"], env=env)
+        with open("testdir/New Conversation.md") as fp:
+            text = fp.read()
+        assert "model = 'this is made up'" in text
+        assert "temperature = 0.001" in text
+
+        # Even though we set the template above to openai:gpt-4o-mini, it won't carry
+        # in a subprocess-based test since it will reload textllm hardcoded defaults.
+        # Therefore, we test it by setting it here and not in the template
+        env["TEXTLLM_DEFAULT_MODEL"] = "openai:gpt-4o-mini"
+        env["TEXTLLM_TEMPLATE_FILE"] = "testdir/template.md"
+        with open("testdir/template.md", "wt") as fp:
+            fp.write(
+                dedent(
+                    """
+                # no title
+                ```toml
+                temperature = 0.123
+                # asfdasdf3. 
+                ```
+                --- System ---
+                Respond with nothing but "hello" (without quotes). DO NOT DEVIATE from this
+                --- User ---
+                
+                """
+                )
+            )
+        subprocess.call([sys.executable, "textllm.py", "testdir/new.md"], env=env)
+        with open("testdir/new.md", "rt") as fp:
+            template = fp.read()
+        assert "temperature = 0.123" in template
+        assert "asfdasdf3" in template
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "textllm.py",
+                "testdir/new.md",
+                "--prompt",
+                "say 'goodbye'",
+                "-v",
+            ],
+            capture_output=True,
+            env=env,
+        )
+        assert proc.stdout.decode().strip() == "hello", "did not get new system command"
+        assert "openai:gpt-4o-mini" in proc.stderr.decode()
+    finally:
+        clean()
 
 
 if __name__ == "__main__":
     test_main()
     test_auto_names()
+    test_default_settings()

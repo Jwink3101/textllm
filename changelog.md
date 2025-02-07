@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1 (2025-02-05)
+
+- Introduced `$TEXTLLM_DEFAULT_MODEL` and `$TEXTLLM_DEFAULT_TEMPERATURE` to control default behavior for *both* new template files and if it's not set
+- Introduced `$TEXTLLM_TEMPLATE_FILE` to specify a new template file. Does *not* include `$TEXTLLM_DEFAULT_MODEL` and `$TEXTLLM_DEFAULT_TEMPERATURE`
+
 ## 0.4.0 (2025-02-05)
 
 - Removed environment settings `$TEXTLLM_AUTO_RENAME` and `$TEXTLLM_STREAM` because as I use it, I don't see the utility. `--rename` default is based on whether a file is specified. There is little reason to universally set --no-stream.
