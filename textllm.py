@@ -27,25 +27,18 @@ from langchain_core.messages import (
     merge_message_runs,
 )
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 log = logging.getLogger("textllm")
 
-# Environment variable configs for defaults
-TEXTLLM_ENV_PATH = os.environ.get("TEXTLLM_ENV_PATH", None)
-TEXTLLM_EDITOR = os.environ.get("TEXTLLM_EDITOR", os.environ.get("EDITOR", "vi"))
-TEXTLLM_DEFAULT_MODEL = os.environ.get("TEXTLLM_DEFAULT_MODEL", "openai:gpt-4o")
-TEXTLLM_DEFAULT_TEMPERATURE = os.environ.get("TEXTLLM_DEFAULT_TEMPERATURE", 0.5)
-TEXTLLM_TEMPLATE_FILE = os.environ.get("TEXTLLM_TEMPLATE_FILE", None)
-
 AUTO_TITLE = "!!AUTO TITLE!!"
-TEMPLATE = f"""\
+TEMPLATE = """\
 # {AUTO_TITLE}
 
 ```toml
 # Optional Settings
-temperature = {float(TEXTLLM_DEFAULT_TEMPERATURE)}
-model = {TEXTLLM_DEFAULT_MODEL!r}
+temperature = {temperature}
+model = {model!r}
 ```
 
 --- System ---
@@ -55,6 +48,41 @@ You are an expert assistant. Provide concise, accurate answers.
 --- User ---
 
 """
+
+
+# Environment variable configs for defaults
+class _DYNAMIC_ENV_CONFIG:
+    @property
+    def TEXTLLM_ENV_PATH(self):
+        return os.environ.get("TEXTLLM_ENV_PATH", None)
+
+    @property
+    def TEXTLLM_EDITOR(self):
+        return os.environ.get("TEXTLLM_EDITOR", os.environ.get("EDITOR", "vi"))
+
+    @property
+    def TEXTLLM_DEFAULT_MODEL(self):
+        return os.environ.get("TEXTLLM_DEFAULT_MODEL", "openai:gpt-4o")
+
+    @property
+    def TEXTLLM_DEFAULT_TEMPERATURE(self):
+        return float(os.environ.get("TEXTLLM_DEFAULT_TEMPERATURE", 0.5))
+
+    @property
+    def TEXTLLM_TEMPLATE_FILE(self):
+        return os.environ.get("TEXTLLM_TEMPLATE_FILE", None)
+
+    @property
+    def TEMPLATE(self):
+        return TEMPLATE.format(
+            AUTO_TITLE=AUTO_TITLE,
+            temperature=float(self.TEXTLLM_DEFAULT_TEMPERATURE),
+            model=self.TEXTLLM_DEFAULT_MODEL,
+        )
+
+
+CONFIG = _DYNAMIC_ENV_CONFIG()
+
 
 TITLE_SYSTEM_PROMPT = """\
 Provide an appropriate, consice, title for this conversation. The conversation is in JSON form with roles 'system' (or 'developer'), 'human', and 'ai'.
@@ -97,7 +125,8 @@ class Conversation:
             fp.seek(len(content), 0)
             fp.truncate()
 
-        self.messages = self.read_conversation()
+        self.parsed = loads(self.text)
+        self.messages = self.process_conversation()
 
     def call_llm(self, messages, stream_model=False, **new_settings):
         settings = self.settings.copy() | new_settings
@@ -178,11 +207,14 @@ class Conversation:
             log.debug(f"{AUTO_TITLE!r} not found in first line.")
             return  # This will happen nearly every time but the first
 
-        messages = [(m.type, m.content) for m in self.messages]
         new = [
             SystemMessage(content=TITLE_SYSTEM_PROMPT),
-            HumanMessage(content=json.dumps(messages)),
+            HumanMessage(content=json.dumps(self.parsed["conversation"])),
         ]
+
+        if TEST_MODE:  # For testing, I don't want to provide this
+            del new[1]
+
         response = self.call_llm(messages=new, temperature=0.1)
         title = response.content
 
@@ -194,21 +226,11 @@ class Conversation:
 
     @cached_property
     def settings(self):
-        defaults = Conversation.read_settings(TEMPLATE)
-        new = Conversation.read_settings(self.text)
-        final = defaults | new
-        return final
+        defaults = Conversation.read_settings(CONFIG.TEMPLATE)
+        return defaults | self.parsed["settings"]
 
     @staticmethod
     def read_settings(text):
-        split_text = CONVO_PATTERN.split(text)
-        # If the first element is a flag, there is no top matter
-        if split_text[0].lower() in FLAG2ROLE:
-            log.debug("No top matter")
-            # return {}
-
-        top = split_text[0]
-
         pattern = re.compile(
             r"""
                 ^```          # Start of line with fenced code block
@@ -224,25 +246,55 @@ class Conversation:
             flags=re.VERBOSE | re.DOTALL | re.MULTILINE | re.IGNORECASE,
         )
 
-        if match := pattern.search(top):  # First one only
+        if match := pattern.search(text):  # First one only
             toml_content = match.group(1).strip()
             return tomllib.loads(toml_content)
 
         return {}
 
-    def read_conversation(self):
-        split_text = CONVO_PATTERN.split(self.text)
+    @staticmethod
+    def loads(text):
+        res = {}
+
+        split_text = CONVO_PATTERN.split(text)
 
         # Split will split at the flags. If the first item is a flag, then there is no
         # top matter. If it isn't a flag, the first item is top matter.
         if split_text[0].lower() not in FLAG2ROLE:
-            del split_text[0]
+            top = split_text.pop(0)
+        else:
+            top = ""
 
-        conversation = []
+        re_role = re.compile("--- (.*) ---")
+
+        res["conversation"] = conversation = []
         for flag, msg in grouper(split_text, 2):
             msg = msg.strip()
             if not msg:
                 continue  # Empty or blank
+
+            # Clean up and unescape
+            msg_lines = []
+            for line in msg.strip().split("\n"):
+                if any(line.lower().startswith(rf"\{flag}") for flag in FLAG2ROLE):
+                    line = line[1:]
+                msg_lines.append(line)
+
+            role = re_role.findall(flag)[0].lower()  # Must be a flag from initial split
+            content = "\n".join(msg_lines)
+
+            conversation.append({"role": role, "content": content})
+
+        res["title"] = top.split("\n")[0].strip().strip("#").strip()
+        res["settings"] = Conversation.read_settings(top)
+
+        return res
+
+    def process_conversation(self):
+        conversation = []
+        for item in self.parsed["conversation"]:
+            flag = f"--- {item['role']} ---"
+            msg = item["content"]
 
             # Clean up and unescape
             msg_lines = []
@@ -310,6 +362,9 @@ class Conversation:
         self.filepath = title_based_filepath
 
 
+loads = Conversation.loads
+
+
 def file_edit(filepath, *, prompt, editor):
     size0 = os.path.getsize(filepath)
     mtime0 = os.path.getmtime(filepath)
@@ -331,7 +386,7 @@ def file_edit(filepath, *, prompt, editor):
 
     if editor:
         # Use shlex.split in case there are flags with the environment variable
-        editcmd = shlex.split(TEXTLLM_EDITOR) + [filepath]
+        editcmd = shlex.split(CONFIG.TEXTLLM_EDITOR) + [filepath]
         log.debug(f"Calling: {editcmd!r}")
         subprocess.check_call(editcmd)
 
@@ -599,15 +654,15 @@ def cli(argv=None):
     log.debug(f"{args = }")
 
     # Load the environment. Can be in three possible places (a,b,c below)
-    if TEXTLLM_ENV_PATH:  # (a) Specified environment variable with the path
-        if load_dotenv(TEXTLLM_ENV_PATH):
-            log.debug(f"Loaded env from ${TEXTLLM_ENV_PATH = }")
+    if CONFIG.TEXTLLM_ENV_PATH:  # (a) Specified environment variable with the path
+        if load_dotenv(CONFIG.TEXTLLM_ENV_PATH, override=True):
+            log.debug(f"Loaded env from ${CONFIG.TEXTLLM_ENV_PATH = }")
         else:
-            log.info(f"Could not load env from specified ${TEXTLLM_ENV_PATH = }")
-    if load_dotenv():  # (b) a .env file
+            log.info(f"Could not load env from specified ${CONFIG.TEXTLLM_ENV_PATH = }")
+    if load_dotenv(override=True):  # (b) a .env file
         log.debug(f"Loaded env from a found '.env' file")
     if args.env:  # (c) specified --env at the command line
-        if load_dotenv(args.env):
+        if load_dotenv(args.env, override=True):
             log.debug(f"Loaded env from args {args.env!r}")
         else:
             log.info(f"env file {args.env!r} not loaded or found")
@@ -638,11 +693,11 @@ def cli(argv=None):
         if not os.path.exists(filepath):
             Path(filepath).parent.mkdir(parents=True, exist_ok=True)
             with open(filepath, "xt") as fp:
-                if TEXTLLM_TEMPLATE_FILE:
-                    with open(TEXTLLM_TEMPLATE_FILE, "rt") as fp2:
+                if CONFIG.TEXTLLM_TEMPLATE_FILE:
+                    with open(CONFIG.TEXTLLM_TEMPLATE_FILE, "rt") as fp2:
                         fp.write(fp2.read())
                 else:
-                    fp.write(TEMPLATE)
+                    fp.write(CONFIG.TEMPLATE)
             log.info(f"{filepath!r} does not exist. Created template.")
 
             if not edit_mode:

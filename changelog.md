@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1 (2025-02-13)
+
+- The environment is now loaded dynamically. This means that you can specify an environment file with textllm settings as well (except for the `$TEXTLLM_ENV_PATH` obviously)
+- Adds `loads()` to help parse the file into a dictionary
+
 ## 0.5.0 (2025-02-05)
 
 Introduces (and tests) the ability to parse Markdown images

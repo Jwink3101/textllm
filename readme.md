@@ -1,6 +1,6 @@
 # textllm
 
-This is a **SIMPLE** text-based interface to LLMs. It is not intended to be a general purpose or overly featureful tool. It is just an easy way to call an LLM and save results in a simple format (text/markdown)
+This is a **SIMPLE** text-based interface to LLMs. It is not intended to be a general purpose or overly featureful tool. It is just an easy way to call an LLM and save results in a simple format (text/markdown). Can also read images in the Markdown.
 
 textllm uses [LangChain][LangChain] to interact with many AI models. 
 
@@ -22,45 +22,49 @@ Then depending on needs
 
 ## Usage
 
-Create a new text file. See the format description below for more:
+Simply call textllm. If no file is specified, will be called `New Conversation.md` (incremented as needed). If the file doesn't exist, a template will be written 
 
-    $ textllm --new mytitle.md
+    $ textllm
+    $ textllm mytitle.md
     
 That will look something like:
 
-    # !!AUTO TITLE!!
-    
-    ```toml
-    # Optional Settings
-    # TOML Format
-    temperature = 0.5
-    model = "openai:gpt-4o"
-    
-    # END Optional Settings
-    ```
-    
-    --- System ---
-    
-    You are a helpful assistant. Provide clear and thorough answers but be concise unless instructed otherwise.
-    
-    --- User ---
+````text
+# !!AUTO TITLE!!
 
+```toml
+# Optional Settings
+temperature = 0.5
+model = 'openai:gpt-4o'
+```
+
+--- System ---
+
+You are an expert assistant. Provide concise, accurate answers.
+
+--- User ---
+
+````
 
 Then (optionally) modify the System prompt and add your query under the user prompt. Then
 
     $ textllm mytitle.md
 
-and it will (a) update the title, and (b) add the response, with a new user block ready to go, below it. You will need to re-open the text editor when its done.
+and it will (a) update the title, and (b) add the response, with a new user block ready to go. You will need to re-open the text editor when its done.
 
 ### Streaming and Prompts
 
-By settings `--stream` (to make textllm stream the output as well) and setting `--prompt` or using `--edit`, this can be like a command-line editor. Use `--silent` to really make it just input and output. Note that a filename must still be provided! 
+You can use `--prompt` to specify the new prompt and/or `--edit` to open a terminal text editor before running. Unless set otherwise, textllm will stream the response. 
 
 ## Titles and Names
 
 As noted in "Format Description", the title is the first line. If "!!AUTO TITLE!!" is in the first line, textllm will generate a title for the document (using the same model). This can be disabled or just manually set the title. To regenerate a title, reset the title to `!!AUTO TITLE!!`.
 
-If `--rename` is set, the document will also be renamed for the title. Numbers will be added to the name as needed to avoid conflicts if needed.
+If `--rename` is set, the document will also be renamed for the title. Numbers will be added to the name as needed to avoid conflicts if needed. `--rename` is the default for new files. This means you can do something like:
+
+    $ textllm --prompt "What is the meaning of life, the universe, and everything"
+
+And it will respond and rename `Rename by title 'New Conversation.md' --> 'Meaning of Life Inquiry.md'`
 
 ## Environment Variables
 
@@ -75,7 +79,7 @@ Most behavior is governed by command-line flags but there are a few exceptions.
 | `$TEXTLLM_TEMPLATE_FILE` | Sets a file to read for the template. This is used for new chats but *not* the defaults.
 
 
-textllm uses [python-dotenv][dotenv] to read `$TEXTLLM_ENV_PATH` but this also means you can have a `.env` file read automatically. These are read for executing the LLM only. Not for setting the above.
+These can be set before calling textllm or via an environment file, either `.env` or with the `--env` flag. The file can also be specified with `$TEXTLLM_ENV_PATH` except for itself of course!
 
 ### API Environment Variables and loading
 

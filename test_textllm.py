@@ -14,11 +14,12 @@ import pytest
 import textllm
 
 ## Reset these
+os.environ["TEXTLLM_DEFAULT_TEMPERATURE"] = "0.01"
 textllm.TEMPLATE = """\
 # !!AUTO TITLE!!
 
 ```toml
-temperature = 0.01
+temperature = {temperature}
 model = "openai:gpt-4o-mini"
 ```
 
@@ -117,6 +118,7 @@ def test_main():
             "--no-stream",
         ]
     )
+    # breakpoint()
     assert not os.path.exists("testdir/tmp.md")
     assert os.path.exists("testdir/title set automatically (1).md")
     assert not out.strip()
@@ -138,8 +140,8 @@ def test_main():
     # Test with --edit, --rename, --title off. With --rename, we shoudl also see a
     # warning that it won't do it!
     try:
-        v0 = textllm.TEXTLLM_EDITOR
-        textllm.TEXTLLM_EDITOR = shlex.join(
+        v0 = os.environ["TEXTLLM_EDITOR"]
+        os.environ["TEXTLLM_EDITOR"] = shlex.join(
             [
                 "python",
                 "-c",
@@ -157,7 +159,7 @@ def test_main():
         )
 
     finally:
-        textllm.TEXTLLM_EDITOR = v0
+        os.environ["TEXTLLM_EDITOR"] = v0
 
     text = Path("testdir/new.md").read_text().strip()
     lines = [l.strip() for l in text.splitlines() if l.strip()]
@@ -194,6 +196,11 @@ def clean():
         item.unlink()
     try:
         shutil.rmtree("testdir/")
+    except OSError:
+        pass
+
+    try:
+        os.unlink(".env")
     except OSError:
         pass
 
@@ -422,8 +429,51 @@ def test_images():
     clean()
 
 
+def test_dynamic_env():
+    """
+    Test that it will change based on os.environ and/or loaded environment.
+
+    Note that the first test isn't really needed because it is already used in the
+    main tests but still good to explicitly confirm
+    """
+    clean()
+    env0 = os.environ.copy()
+    try:
+        # Even the fact that it is 0.01 as set above as an env after import will test
+        # it in many ways
+        run_cli(["testdir/os.environ.md"])
+        convo = textllm.loads(Path("testdir/os.environ.md").read_text())
+        assert convo["settings"]["temperature"] == 0.01
+
+        # Env file specified. Also tests overwriting environment
+        Path("testdir/envfile.env").write_text("TEXTLLM_DEFAULT_TEMPERATURE = 0.1")
+        run_cli(["testdir/env_file.md", "--env", "testdir/envfile.env"])
+        convo = textllm.loads(Path("testdir/env_file.md").read_text())
+        assert convo["settings"]["temperature"] == 0.1
+
+        env2 = Path("testdir/envfile2.env")
+        env2.write_text("TEXTLLM_DEFAULT_TEMPERATURE = 0.2")
+        os.environ["TEXTLLM_ENV_PATH"] = str(env2.resolve())
+        run_cli(["testdir/env_file2.md"])
+        convo = textllm.loads(Path("testdir/env_file2.md").read_text())
+        assert convo["settings"]["temperature"] == 0.2
+    finally:
+        os.environ = env0
+
+    try:
+        os.environ.pop("TEXTLLM_ENV_PATH", None)
+        Path(".env").write_text("TEXTLLM_DEFAULT_TEMPERATURE = 0.3")
+        run_cli(["testdir/env_file_dot.md"])
+        convo = textllm.loads(Path("testdir/env_file_dot.md").read_text())
+        assert convo["settings"]["temperature"] == 0.3
+    finally:
+        os.unlink(".env")
+        os.environ = env0
+
+
 if __name__ == "__main__":
     # test_main()
     # test_auto_names()
     # test_default_settings()
-    test_images()
+    # test_images()
+    test_dynamic_env()
