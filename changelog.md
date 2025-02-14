@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0 (2025-02-14)
+
+- Fixed bug with reading stdin and launching editor
+- Added `--stdin` instead of `--prompt -` so that you can do both
+- Changed `--silent` to `--quiet`
+- Added "Created with {version} at {now}" to the template and those are now filliable
+
 ## 0.5.1 (2025-02-13)
 
 - The environment is now loaded dynamically. This means that you can specify an environment file with textllm settings as well (except for the `$TEXTLLM_ENV_PATH` obviously)

@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from datetime import datetime
 from functools import cached_property
 from pathlib import Path
 from textwrap import dedent
@@ -27,7 +28,7 @@ from langchain_core.messages import (
     merge_message_runs,
 )
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 log = logging.getLogger("textllm")
 
@@ -40,6 +41,8 @@ TEMPLATE = """\
 temperature = {temperature}
 model = {model!r}
 ```
+
+Created with {version} at {now} 
 
 --- System ---
 
@@ -78,6 +81,8 @@ class _DYNAMIC_ENV_CONFIG:
             AUTO_TITLE=AUTO_TITLE,
             temperature=float(self.TEXTLLM_DEFAULT_TEMPERATURE),
             model=self.TEXTLLM_DEFAULT_MODEL,
+            now=datetime.now().astimezone().isoformat(),
+            version=f"textllm-{__version__}",
         )
 
 
@@ -88,9 +93,8 @@ TITLE_SYSTEM_PROMPT = """\
 Provide an appropriate, consice, title for this conversation. The conversation is in JSON form with roles 'system' (or 'developer'), 'human', and 'ai'.
 
 - Aim for fewer than 5 words but absolutely no more than 10.
-- Give more influence to earlier messages than later.
 - Be as concise as possible without losing the context of the conversation.
-- Your goal is to extract the key point of the conversation
+- Your goal is to extract the key point and intent of the conversation
 - Make sure the title is also appropriate for a filename. Spaces are acceptable.
 - Reply with ONLY the title and nothing else!
 """
@@ -265,8 +269,11 @@ class Conversation:
         else:
             top = ""
 
-        re_role = re.compile("--- (.*) ---")
+        res["title"] = top.split("\n")[0].strip().strip("#").strip()
+        res["settings"] = Conversation.read_settings(top)
+        res["top"] = top
 
+        re_role = re.compile("--- (.*) ---")
         res["conversation"] = conversation = []
         for flag, msg in grouper(split_text, 2):
             msg = msg.strip()
@@ -284,9 +291,6 @@ class Conversation:
             content = "\n".join(msg_lines)
 
             conversation.append({"role": role, "content": content})
-
-        res["title"] = top.split("\n")[0].strip().strip("#").strip()
-        res["settings"] = Conversation.read_settings(top)
 
         return res
 
@@ -388,7 +392,8 @@ def file_edit(filepath, *, prompt, editor):
         # Use shlex.split in case there are flags with the environment variable
         editcmd = shlex.split(CONFIG.TEXTLLM_EDITOR) + [filepath]
         log.debug(f"Calling: {editcmd!r}")
-        subprocess.check_call(editcmd)
+        with open("/dev/tty", "r") as tty:
+            subprocess.run(editcmd, stdin=tty, check=True)
 
     size1 = os.path.getsize(filepath)
     mtime1 = os.path.getmtime(filepath)
@@ -588,7 +593,7 @@ def cli(argv=None):
 
     verb = parser.add_argument_group("Verbosity Settings:")
     verb.add_argument(
-        "-s", "--silent", action="count", default=0, help="Decrease Verbosity"
+        "-q", "--quiet", action="count", default=0, help="Decrease Verbosity"
     )
     verb.add_argument(
         "-v", "--verbose", action="count", default=0, help="Increase Verbosity"
@@ -607,8 +612,14 @@ def cli(argv=None):
         metavar="text",
         default="",
         help="""
-            Prompt text to add. If combined with --edit, this will be added first. 
-            Specify as '-' to read stdin.
+            Prompt text to add. Will be included if --edit. 
+        """,
+    )
+    edit.add_argument(
+        "--stdin",
+        action="store_true",
+        help="""
+            Read stdin for prompt. Will go *after* --prompt. Will be included if --edit.
         """,
     )
 
@@ -625,7 +636,7 @@ def cli(argv=None):
 
     # Define logging levels
     levels = [logging.ERROR, logging.WARNING, logging.INFO, logging.DEBUG]
-    level_index = args.verbose - args.silent + 2  # +1: WARNING, +2: INFO
+    level_index = args.verbose - args.quiet + 2  # +1: WARNING, +2: INFO
     level_index = max(0, min(level_index, len(levels) - 1))  # Always keep ERROR
 
     log.setLevel(logging.DEBUG)  # Highest. Handler will set lower
@@ -675,9 +686,12 @@ def cli(argv=None):
     # Handle edit modes.
     args.prompt = args.prompt.strip()
     if args.prompt == "-":
+        log.warning("To read stdin, use --stdin")
+    if args.stdin:
         log.debug("reading stdin")
-        args.prompt = sys.stdin.read().strip()
-    edit_mode = bool(args.edit or args.prompt)
+        args.prompt = args.prompt + "\n\n" + sys.stdin.read().strip()
+        args.prompt = args.prompt.strip()
+    edit_mode = bool(args.edit or args.prompt or args.stdin)
     log.debug(f"{edit_mode = }")
 
     try:
