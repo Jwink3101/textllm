@@ -28,7 +28,7 @@ from langchain_core.messages import (
     merge_message_runs,
 )
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 log = logging.getLogger("textllm")
 
@@ -44,11 +44,11 @@ model = {model!r}
 
 Created with {version} at {now} 
 
---- System ---
+--- System ---  
 
 You are an expert assistant. Provide concise, accurate answers.
 
---- User ---
+--- User ---  
 
 """
 
@@ -121,13 +121,9 @@ class Conversation:
     def __init__(self, filepath):
         self.filepath = self.filepath0 = filepath
 
-        # Read and truncate file. Do it now in case the title is updated
-        with open(self.filepath, "rb+") as fp:
-            content = fp.read().rstrip()
-            self.text = content.decode("UTF-8")
-
-            fp.seek(len(content), 0)
-            fp.truncate()
+        # Read and truncate file
+        with open(self.filepath, "rt") as fp:
+            self.text = fp.read().rstrip()
 
         self.parsed = loads(self.text)
         self.messages = self.process_conversation()
@@ -198,12 +194,32 @@ class Conversation:
         content = response.content
         content = CONVO_PATTERN.sub(r"\\\1", content)
 
-        with open(self.filepath, "at") as fp:
-            fp.write("\n\n--- Assistant ---\n\n")
-            fp.write(content)
-            fp.write("\n\n--- User ---\n\n")
+        with open(self.filepath, "r+") as file:
+            # Move to the last non-white space up to 100
+            # characters
+            file.seek(0, 2)  # Move to the end of the file
+            file_length = file.tell()
 
-        log.info(f"Updated {self.filepath!r}")
+            MX = 100
+            for _ in range(MX):
+                if file_length == 0:
+                    break
+                file.seek(file_length - 1)
+                if not file.read(1).isspace():
+                    file.seek(file_length)  # Move forward character
+                    break
+                file_length -= 1
+
+            else:
+                log.debug(
+                    f"Did not find a non-whitespace character within the last {MX} "
+                    "characters."
+                )
+            file.write("\n\n--- Assistant ---  \n\n")
+            file.write(content)
+            file.write("\n\n--- User ---  \n\n")
+
+            log.info(f"Updated {self.filepath!r}")
 
     def set_title(self):
         top, rest = self.text.split("\n", 1)

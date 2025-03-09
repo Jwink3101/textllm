@@ -1,11 +1,15 @@
 # Changelog
 
+## 0.6.1 (2025-03-09)
+
+- Better handle the white-space in the input file.
+
 ## 0.6.0 (2025-02-14)
 
 - Fixed bug with reading stdin and launching editor
 - Added `--stdin` instead of `--prompt -` so that you can do both
 - Changed `--silent` to `--quiet`
-- Added "Created with {version} at {now}" to the template and those are now filliable
+- Added "Created with {version} at {now}" to the template and those are now fillable
 
 ## 0.5.1 (2025-02-13)
 
