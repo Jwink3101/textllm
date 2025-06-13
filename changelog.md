@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.2 (2025-06-13)
+
+- Title calls now use the same settings
+
 ## 0.6.1 (2025-03-09)
 
 - Better handle the white-space in the input file.

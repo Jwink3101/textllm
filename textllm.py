@@ -28,7 +28,7 @@ from langchain_core.messages import (
     merge_message_runs,
 )
 
-__version__ = "0.6.1"
+__version__ = "0.6.2"
 
 log = logging.getLogger("textllm")
 
@@ -235,7 +235,7 @@ class Conversation:
         if TEST_MODE:  # For testing, I don't want to provide this
             del new[1]
 
-        response = self.call_llm(messages=new, temperature=0.1)
+        response = self.call_llm(messages=new, **self.settings)
         title = response.content
 
         top = top.replace(AUTO_TITLE, title)
