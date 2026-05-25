@@ -1,32 +1,24 @@
 # textllm
 
-This is a **SIMPLE** text-based interface to LLMs. It is not intended to be a general purpose or overly featureful tool. It is just an easy way to call an LLM and save results in a simple format (text/markdown). Can also read images in the Markdown.
+This is a **SIMPLE** text-based interface to LLMs. It is not intended to be a general purpose or overly featureful tool. It is just an easy way to call an LLM and save results in a simple format (text/markdown). It can also read images referenced in the Markdown.
 
-textllm uses [LangChain][LangChain] to interact with many AI models. 
-
-[LangChain]:https://www.langchain.com/
+textllm uses [LiteLLM][litellm] to interact with many AI models.
 
 ## Setup
 
-Install from PyPI
+Install from PyPI:
 
     $ pip install textllm
 
-Then depending on needs
-
-    $ pip install langchain-openai
-    $ pip install langchain-anthropic
-    $ pip install langchain-google-genai
-    ...
-
+LiteLLM handles provider integrations. In most cases, install textllm and set the provider API key in the environment.
 
 ## Usage
 
-Simply call textllm. If no file is specified, will be called `New Conversation.md` (incremented as needed). If the file doesn't exist, a template will be written 
+Simply call textllm. If no file is specified, it will create `New Conversation.md` with an incremented filename as needed. If the file does not exist, a template will be written.
 
     $ textllm
     $ textllm mytitle.md
-    
+
 That will look something like:
 
 ````text
@@ -34,9 +26,11 @@ That will look something like:
 
 ```toml
 # Optional Settings
-temperature = 0.5
-model = 'openai:gpt-4o'
+temperature = 1.0
+model = 'openai/gpt-5.5'
 ```
+
+Created with textllm-0.7.0 at 2026-05-24T12:00:00-06:00
 
 --- System ---
 
@@ -46,64 +40,65 @@ You are an expert assistant. Provide concise, accurate answers.
 
 ````
 
-Then (optionally) modify the System prompt and add your query under the user prompt. Then
+Then modify the system prompt if needed and add your query under the user prompt. Then run:
 
     $ textllm mytitle.md
 
-and it will (a) update the title, and (b) add the response, with a new user block ready to go. You will need to re-open the text editor when its done.
+textllm will update the title if needed, stream the response to stdout, append the response to the file, and add a new user block ready for the next prompt.
 
 ### Streaming and Prompts
 
-You can use `--prompt` to specify the new prompt and/or `--edit` to open a terminal text editor before running. Unless set otherwise, textllm will stream the response. 
+You can use `--prompt` to specify the new prompt and/or `--edit` to open a terminal text editor before running. textllm always streams the response to stdout while also writing the collected response to the conversation file.
 
 ## Titles and Names
 
-As noted in "Format Description", the title is the first line. If "!!AUTO TITLE!!" is in the first line, textllm will generate a title for the document (using the same model). This can be disabled or just manually set the title. To regenerate a title, reset the title to `!!AUTO TITLE!!`.
+As noted in "Format Description", the title is the first line. If `!!AUTO TITLE!!` is in the first line, textllm will generate a title for the document using the document settings, including the same model. This can be disabled or the title can be manually set. To regenerate a title, reset the title to `!!AUTO TITLE!!`.
 
-If `--rename` is set, the document will also be renamed for the title. Numbers will be added to the name as needed to avoid conflicts if needed. `--rename` is the default for new files. This means you can do something like:
+If `--rename` is set, the document will also be renamed from the title. Numbers will be added to avoid conflicts if needed. `--rename` is the default for new files. This means you can do something like:
 
     $ textllm --prompt "What is the meaning of life, the universe, and everything"
 
-And it will respond and rename `Rename by title 'New Conversation.md' --> 'Meaning of Life Inquiry.md'`
+And it will respond and rename `New Conversation.md` to something like `Meaning of Life Inquiry.md`.
 
 ## Environment Variables
 
-Most behavior is governed by command-line flags but there are a few exceptions. 
+Most behavior is governed by command-line flags but there are a few exceptions.
 
 | Variable | Description |
 |--|--|
-|`$TEXTLLM_ENV_PATH` | Path to an environment file for API keys. They can also just be set directly.|
-| `$TEXTLLM_EDITOR` | Set the editor for the `--edit` flag. Will fallback to `$EDITOR` then finally `vi`. |
-| `$TEXTLLM_DEFAULT_MODEL` | Sets the default model if one is not specified AND sets one in a template for new chats |
-| `$TEXTLLM_DEFAULT_TEMPERATURE` | Sets the default temperature if one is not specified AND sets one in a template for new chats |
-| `$TEXTLLM_TEMPLATE_FILE` | Sets a file to read for the template. This is used for new chats but *not* the defaults.
+| `$TEXTLLM_ENV_PATH` | Path to an environment file for API keys. They can also just be set directly. |
+| `$TEXTLLM_EDITOR` | Set the editor for the `--edit` flag. Will fall back to `$EDITOR` and then `vi`. |
+| `$TEXTLLM_DEFAULT_MODEL` | Sets the default model if one is not specified and writes it into templates for new chats. |
+| `$TEXTLLM_DEFAULT_TEMPERATURE` | Sets the default temperature if one is not specified and writes it into templates for new chats. |
+| `$TEXTLLM_TEMPLATE_FILE` | Sets a file to read for the template. This is used for new chats but not for defaults. |
 
+These can be set before calling textllm or via an environment file, either `.env` or with the `--env` flag. The file can also be specified with `$TEXTLLM_ENV_PATH` except for itself of course.
 
-These can be set before calling textllm or via an environment file, either `.env` or with the `--env` flag. The file can also be specified with `$TEXTLLM_ENV_PATH` except for itself of course!
+For custom templates that should follow environment defaults for different models, either omit `model` and `temperature` from the template settings or use placeholders such as `{model}` and `{temperature}`. See [Template Defaults and Environment Variables](docs/template_defaults.md) for examples.
 
-### API Environment Variables and loading
+### API Environment Variables and Loading
 
-Most APIs called by LangChain require the API key be in the environment. For example `$OPENAI_API_KEY`, `$ANTHROPIC_API_KEY`, `$GOOGLE_API_KEY`.
+LiteLLM usually reads provider API keys from environment variables. For example, OpenAI uses `$OPENAI_API_KEY`, Anthropic uses `$ANTHROPIC_API_KEY`, and Google uses `$GEMINI_API_KEY` or provider-specific LiteLLM settings.
 
-These can be specified, as normal, outside of textllm, but you can also store them in a file. You can tell textllm where to find that file in any (or all) of three ways:
+These can be specified outside of textllm, but you can also store them in a file. You can tell textllm where to find that file in any or all of three ways:
 
 1. Set environment variable `$TEXTLLM_ENV_PATH`
 2. Create a `.env` file for [python-dotenv][dotenv] to find
-3. The `--env` command-line argument.
+3. Use the `--env` command-line argument
 
+## Models and Settings
 
-## Other Models
-
-Any model understood by the LangChain function [here][init_chat_model] could be used. Below are some examples:
+Any model understood by LiteLLM's [completion API][completion] can be used. The model should use LiteLLM's provider/model naming, for example:
 
 ```toml
-model = "openai:gpt-4o"  # pip install langchain-openai
-model = "openai:gpt-4o-mini"
-model = "anthropic:claude-3-5-sonnet-latest"  # pip install langchain-anthropic
-model = "anthropic:claude-3-5-haiku-latest"
-model = "google_genai:gemini-1.5-pro" # pip install langchain-google-genai
-model = "google_genai:gemini-1.5-flash" 
+model = "openai/gpt-5.5"
+model = "openai/gpt-4o-mini"
+model = "anthropic/claude-sonnet-4-5"
+model = "gemini/gemini-2.5-pro"
+model = "ollama/llama3.1"
 ```
+
+All TOML settings except `model` are passed through to LiteLLM. Unsupported settings will fail at the LiteLLM or provider layer.
 
 ## Format Description
 
@@ -115,24 +110,24 @@ The format is designed to be very simple. An input is broken up into three main 
 
 ### (1) Title:
 
-The first line of the document. If and only if it contains "!!AUTO TITLE!!", it will be replaced with an appropriate title based on the document (using the LLM).
+The first line of the document. If and only if it contains `!!AUTO TITLE!!`, it will be replaced with an appropriate title based on the document using the LLM.
 
-Generally, this is only set once, but if "!!AUTO TITLE!!" is added back to the first line, it will get refreshed.
+Generally, this is only set once, but if `!!AUTO TITLE!!` is added back to the first line, it will get refreshed.
 
 ### (2) Settings
 
-Specify settings for the object in [TOML][toml] format inside of a Markdown fenced code block. All settings are directly passed, including 'model'. The model should be in the format of "<provider>:<name>" where providers are those from LangChain. See [`init_chat_model` docs][init_chat_model] for the naming scheme and needed Python package and [Chat Models][chat models] for more details. The template settings are the default and these update them.
+Specify settings in [TOML][toml] format inside a Markdown fenced code block. All settings are directly passed to LiteLLM, except for `model`, which textllm uses to select the model. The template settings are the default and conversation settings update them.
 
-Note that they require an API key. It can be specified in the settings or can be set with an environment variable. Alternatively, an environment file can be specified with '$TEXTLLM_ENV_PATH' that may contain all API keys.
+Note that providers require API keys. Keys can be passed through settings when LiteLLM supports that, but environment variables or an environment file are usually better.
 
 ### (3) Conversation
 
-The conversation is with a simple format. There are three block types as demonstrated below. General practice is to specify 'system' at the top and only once, but textllm will translate all that are specified.
+The conversation is written with simple Markdown role blocks. `System`, `Developer`, `User`, and `Assistant` are supported and are sent as OpenAI-style roles.
 
-```text 
+```text
 --- System ---
 
-Enter your system prompt. These are like *super* user blocks.
+Enter your system prompt. These are like super user blocks.
 
 --- User ---
 
@@ -140,26 +135,33 @@ The last "User" block is usually the question.
 
 --- Assistant ---
 
-The response. 
+The response.
 ```
 
-Generally, you want the final block to be the new "User" question but it doesn't have to be. Note that a new "--- User ---" heading will be added after the last response.
-
-You can escape a block with a leading "\". It will be done if somehow the response also has such a block.
+Generally, you want the final block to be the new `User` question, but it does not have to be if `--no-require-user-prompt` is used. A new `--- User ---` heading will be added after the last response. You can escape a block marker with a leading `\`; textllm will also do this automatically if a response contains a marker.
 
 ## Tips and Tricks
 
 ### Images
 
-You can include images in the Markdown in normal format. They can be used to ask questions about specific images.
+You can include images in the Markdown in normal format. Standalone image lines in user messages are converted into LiteLLM/OpenAI-style multimodal input blocks.
 
-### Open vim at Bottom
+### Open Vim at Bottom
 
-If using `--edit` to edit the file before submitting, it would be nice to open at the bottom of the file. textllm will correctly handle flags in `$TEXTLLM_EDITOR` so you can do something like:
+If using `--edit` to edit the file before submitting, it can be useful to open at the bottom of the file. textllm will correctly handle flags in `$TEXTLLM_EDITOR` so you can do something like:
 
     export TEXTLLM_EDITOR="vim +"
 
-[dotenv]:https://github.com/theskumar/python-dotenv
-[toml]: https://toml.io/ 
-[init_chat_model]: https://python.langchain.com/api_reference/langchain/chat_models/langchain.chat_models.base.init_chat_model.html
-[chat models]: https://python.langchain.com/docs/integrations/chat/
+## More Docs
+
+- [LiteLLM migration guide](docs/migration_litellm.md)
+- [File format specification](docs/format_spec.md)
+- [Design](docs/design.md)
+- [Roadmap](docs/roadmap.md)
+- [Testing strategy](docs/testing_strategy.md)
+- [Manual tests](docs/manual_tests.md)
+
+[dotenv]: https://github.com/theskumar/python-dotenv
+[toml]: https://toml.io/
+[litellm]: https://docs.litellm.ai/
+[completion]: https://docs.litellm.ai/docs/completion/input

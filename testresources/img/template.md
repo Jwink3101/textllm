@@ -3,7 +3,7 @@
 ```toml
 # Optional Settings
 temperature = 0.1
-model = 'openai:gpt-4o-mini'
+model = 'openai/gpt-4o-mini'
 ```
 
 --- System ---
@@ -11,4 +11,3 @@ model = 'openai:gpt-4o-mini'
 You are an expert assistant. Provide VERY concise, accurate answers.
 
 --- User ---
-

@@ -14,13 +14,14 @@ import pytest
 import textllm
 
 ## Reset these
+os.environ["TEXTLLM_TEST_MODE"] = "1"
 os.environ["TEXTLLM_DEFAULT_TEMPERATURE"] = "0.01"
 textllm.TEMPLATE = """\
 # !!AUTO TITLE!!
 
 ```toml
 temperature = {temperature}
-model = "openai:gpt-4o-mini"
+model = "openai/gpt-4o-mini"
 ```
 
 --- System ---
@@ -108,20 +109,19 @@ def test_main():
     assert lines[-1] == "--- User ---"
     assert lines[-2] == "1 user messages. Last message ended with: test"
 
-    # Make sure it (a) renames properly and (b) doesn't stream
+    # Make sure it renames properly. Streaming is now always on.
     out, log = run_cli(
         [
             "testdir/tmp.md",
             "--prompt",
             "This is also a tester",
             "--rename",
-            "--no-stream",
         ]
     )
     # breakpoint()
     assert not os.path.exists("testdir/tmp.md")
     assert os.path.exists("testdir/title set automatically (1).md")
-    assert not out.strip()
+    assert out.strip() == "1 user messages. Last message ended with: tester"
 
     text = Path("testdir/title set automatically (1).md").read_text().strip()
     lines = [l.strip() for l in text.splitlines() if l.strip()]
@@ -155,7 +155,7 @@ def test_main():
         )
 
         out, log = run_cli(
-            ["testdir/new.md", "--rename", "--stream", "-v", "--title", "off", "--edit"]
+            ["testdir/new.md", "--rename", "-v", "--title", "off", "--edit"]
         )
 
     finally:
@@ -176,7 +176,7 @@ def test_main():
         == "# title set automatically"
     )
 
-    with pytest.raises(textllm.NoHumanMessageError):
+    with pytest.raises(textllm.NoUserMessageError):
         out, log = run_cli(["testdir/new.md", "--rename", "-v"])
     out, log = run_cli(["testdir/new.md", "--rename", "-v", "--no-require-user-prompt"])
 
@@ -313,10 +313,10 @@ def test_default_settings():
         assert "model = 'this is made up'" in text
         assert "temperature = 0.001" in text
 
-        # Even though we set the template above to openai:gpt-4o-mini, it won't carry
+        # Even though we set the template above to openai/gpt-4o-mini, it won't carry
         # in a subprocess-based test since it will reload textllm hardcoded defaults.
         # Therefore, we test it by setting it here and not in the template
-        env["TEXTLLM_DEFAULT_MODEL"] = "openai:gpt-4o-mini"
+        env["TEXTLLM_DEFAULT_MODEL"] = "openai/gpt-4o-mini"
         env["TEXTLLM_TEMPLATE_FILE"] = "testdir/template.md"
         with open("testdir/template.md", "wt") as fp:
             fp.write(
@@ -324,9 +324,11 @@ def test_default_settings():
                     """
                 # no title
                 ```toml
-                temperature = 0.123
+                model = "{model}"
+                temperature = {temperature}
                 # asfdasdf3. 
                 ```
+                Created with {version} at {now}
                 --- System ---
                 Respond with nothing but "hello" (without quotes). DO NOT DEVIATE from this
                 --- User ---
@@ -337,7 +339,10 @@ def test_default_settings():
         subprocess.call([sys.executable, "textllm.py", "testdir/new.md"], env=env)
         with open("testdir/new.md", "rt") as fp:
             template = fp.read()
-        assert "temperature = 0.123" in template
+        assert 'model = "openai/gpt-4o-mini"' in template
+        assert "temperature = 0.001" in template
+        assert "Created with textllm-" in template
+        assert " at 20" in template
         assert "asfdasdf3" in template
         proc = subprocess.run(
             [
@@ -352,7 +357,7 @@ def test_default_settings():
             env=env,
         )
         assert proc.stdout.decode().strip() == "hello", "did not get new system command"
-        assert "openai:gpt-4o-mini" in proc.stderr.decode()
+        assert "openai/gpt-4o-mini" in proc.stderr.decode()
     finally:
         clean()
 
@@ -378,7 +383,7 @@ def test_images():
         )
 
     out, log = run_cli(["testdir/one.md"])
-    assert "heart" in out.lower()
+    assert "saw 1 images" in out.lower()
     assert "Found image 'testdir/traeh.png', 3405 bytes" in log  # Path relative to exe
 
     shutil.copy2("testdir/template.md", "testdir/two.md")
@@ -398,15 +403,12 @@ def test_images():
         )
 
     out, log = run_cli(["testdir/two.md"])
-    #     assert "heart" in out.lower()
-    #     assert "arrow" in out.lower()
-    #     assert "two" in out.lower() or "2" in out.lower()
-    print("#" * 40 + f"\nMANUAL: {out}\n")
+    assert "saw 2 images" in out.lower()
 
     # Test context
     out, log = run_cli(["testdir/two.md", "--prompt", "what color are they?"])
-    assert "blue" in out.lower()
-    assert "black" in out.lower()
+    assert "saw 2 images" in out.lower()
+    assert "2 user messages" in out.lower()
 
     # Test embedded images
     shutil.copy2("testdir/template.md", "testdir/three.md")
@@ -423,10 +425,222 @@ def test_images():
             )
         )
     out, log = run_cli(["testdir/three.md"])
-    assert "blue" in out.lower()
+    assert "saw 1 images" in out.lower()
     assert "Found 'data:<...>' URL" in log
 
     clean()
+
+
+def test_developer_role_and_adjacent_merge():
+    clean()
+    try:
+        os.makedirs("testdir")
+        Path("testdir/dev.md").write_text(
+            dedent(
+                """
+                # dev role
+
+                ```toml
+                model = "openai/gpt-4o-mini"
+                ```
+
+                --- System ---
+
+                System prompt
+
+                --- Developer ---
+
+                Developer prompt
+
+                --- User ---
+
+                First message
+
+                --- User ---
+
+                Second message
+                """
+            ).strip()
+        )
+
+        convo = textllm.Conversation("testdir/dev.md")
+        assert [msg["role"] for msg in convo.messages] == [
+            "system",
+            "developer",
+            "user",
+        ]
+        assert convo.messages[-1]["content"] == "First message\n\nSecond message"
+
+        out, log = run_cli(["testdir/dev.md"])
+        assert out.strip() == "1 user messages. Last message ended with: message"
+    finally:
+        clean()
+
+
+def test_litellm_chunk_helpers_and_multimodal_merge():
+    class Delta:
+        content = "object text"
+
+    class Choice:
+        delta = Delta()
+
+    class Chunk:
+        choices = [Choice()]
+        usage = {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+
+    assert (
+        textllm._chunk_text({"choices": [{"delta": {"content": "dict text"}}]})
+        == "dict text"
+    )
+    assert textllm._chunk_text({"choices": [{"delta": {}}]}) == ""
+    assert textllm._chunk_text(Chunk()) == "object text"
+    assert textllm._chunk_text(object()) == ""
+    assert textllm._chunk_usage({"usage": {"total_tokens": 3}}) == {"total_tokens": 3}
+    assert textllm._chunk_usage(Chunk()) == {
+        "prompt_tokens": 1,
+        "completion_tokens": 2,
+        "total_tokens": 3,
+    }
+
+    merged = textllm.merge_message_runs(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,"},
+                    },
+                ],
+            },
+            {"role": "user", "content": "Then summarize"},
+        ]
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["content"][0]["text"] == "Describe"
+    assert merged[0]["content"][2] == {"type": "text", "text": "\n\n"}
+    assert merged[0]["content"][-1] == {"type": "text", "text": "Then summarize"}
+
+    merged = textllm.merge_message_runs(
+        [
+            {"role": "user", "content": [{"type": "text", "text": "One"}]},
+            {"role": "user", "content": [{"type": "text", "text": "Two"}]},
+        ]
+    )
+    assert merged[0]["content"] == [
+        {"type": "text", "text": "One\n\n"},
+        {"type": "text", "text": "Two"},
+    ]
+
+
+def test_call_llm_usage_and_empty_stream(monkeypatch):
+    clean()
+    try:
+        os.makedirs("testdir")
+        Path("testdir/call.md").write_text(
+            dedent(
+                """
+                # call
+
+                ```toml
+                model = "openai/gpt-4o-mini"
+                ```
+
+                --- User ---
+
+                hello
+                """
+            ).strip()
+        )
+        convo = textllm.Conversation("testdir/call.md")
+
+        def fake_stream(*, model, messages, settings):
+            yield "hi", {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+
+        monkeypatch.setattr(textllm, "iter_completion_text", fake_stream)
+        response = convo.call_llm(convo.messages)
+        assert response.content == "hi"
+        assert response.usage_metadata["total_tokens"] == 3
+
+        def empty_stream(*, model, messages, settings):
+            if False:
+                yield None
+
+        monkeypatch.setattr(textllm, "iter_completion_text", empty_stream)
+        with pytest.raises(ValueError, match="did not include text"):
+            convo.call_llm(convo.messages)
+    finally:
+        clean()
+
+
+def test_parser_edges_and_image_code_blocks():
+    assert textllm.Conversation.read_settings("No settings here") == {}
+
+    parsed = textllm.loads(
+        dedent(
+            r"""
+            --- User ---
+
+            \--- User ---
+            This is literal marker text.
+            """
+        ).strip()
+    )
+    assert parsed["title"] == ""
+    assert parsed["conversation"] == [
+        {
+            "role": "user",
+            "content": "--- User ---\nThis is literal marker text.",
+        }
+    ]
+
+    msg, images = textllm.process_msg_for_images(
+        [
+            "Before",
+            "```md",
+            "![not image](inside-code.png)",
+            "```",
+            "![real](outside.png)",
+        ]
+    )
+    assert images == ["outside.png"]
+    assert "![not image](inside-code.png)" in msg
+    assert "![real](outside.png)" not in msg
+
+
+def test_stdin_prompt_joining_and_empty_prompt_file_edit():
+    clean()
+    try:
+        os.makedirs("testdir")
+        Path("testdir/stdin.md").write_text(textllm.CONFIG.TEMPLATE)
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "textllm.py",
+                "testdir/stdin.md",
+                "--prompt",
+                "first prompt",
+                "--stdin",
+            ],
+            input=b"second prompt",
+            capture_output=True,
+            env=os.environ.copy(),
+        )
+        assert proc.returncode == 0
+        text = Path("testdir/stdin.md").read_text()
+        assert "first prompt\n\nsecond prompt" in text
+        assert "Last message ended with: prompt" in proc.stdout.decode()
+
+        Path("testdir/empty.md").write_text("")
+        assert textllm.file_edit("testdir/empty.md", prompt="abc", editor=False)
+        assert Path("testdir/empty.md").read_text() == "abc"
+
+        assert not textllm.file_edit("testdir/empty.md", prompt="", editor=False)
+    finally:
+        clean()
 
 
 def test_dynamic_env():

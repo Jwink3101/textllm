@@ -14,21 +14,16 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from dataclasses import dataclass
 from datetime import datetime
 from functools import cached_property
 from pathlib import Path
-from textwrap import dedent
+
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 from dotenv import load_dotenv  # pip install python-dotenv
-from langchain.chat_models import init_chat_model
-from langchain_core.messages import (
-    AIMessage,
-    HumanMessage,
-    SystemMessage,
-    merge_message_runs,
-)
 
-__version__ = "0.6.2"
+__version__ = "0.7.0"
 
 log = logging.getLogger("textllm")
 
@@ -42,15 +37,20 @@ temperature = {temperature}
 model = {model!r}
 ```
 
-Created with {version} at {now} 
+Created with {version} at {now}
 
---- System ---  
+--- System ---
 
 You are an expert assistant. Provide concise, accurate answers.
 
---- User ---  
+--- User ---
 
 """
+
+
+TEMPLATE_PLACEHOLDER_PATTERN = re.compile(
+    r"\{(AUTO_TITLE|temperature|model|now|version)(!r)?\}"
+)
 
 
 # Environment variable configs for defaults
@@ -65,19 +65,19 @@ class _DYNAMIC_ENV_CONFIG:
 
     @property
     def TEXTLLM_DEFAULT_MODEL(self):
-        return os.environ.get("TEXTLLM_DEFAULT_MODEL", "openai:gpt-4o")
+        return os.environ.get("TEXTLLM_DEFAULT_MODEL", "openai/gpt-5.5")
 
     @property
     def TEXTLLM_DEFAULT_TEMPERATURE(self):
-        return float(os.environ.get("TEXTLLM_DEFAULT_TEMPERATURE", 0.5))
+        return float(os.environ.get("TEXTLLM_DEFAULT_TEMPERATURE", 1.0))
 
     @property
     def TEXTLLM_TEMPLATE_FILE(self):
         return os.environ.get("TEXTLLM_TEMPLATE_FILE", None)
 
     @property
-    def TEMPLATE(self):
-        return TEMPLATE.format(
+    def TEMPLATE_VALUES(self):
+        return dict(
             AUTO_TITLE=AUTO_TITLE,
             temperature=float(self.TEXTLLM_DEFAULT_TEMPERATURE),
             model=self.TEXTLLM_DEFAULT_MODEL,
@@ -85,12 +85,29 @@ class _DYNAMIC_ENV_CONFIG:
             version=f"textllm-{__version__}",
         )
 
+    @property
+    def TEMPLATE(self):
+        return TEMPLATE.format(**self.TEMPLATE_VALUES)
+
+    def render_template(self, text):
+        """Fill supported placeholders in a custom conversation template."""
+
+        values = self.TEMPLATE_VALUES
+
+        def replace(match):
+            value = values[match.group(1)]
+            if match.group(2) == "!r":
+                return repr(value)
+            return str(value)
+
+        return TEMPLATE_PLACEHOLDER_PATTERN.sub(replace, text)
+
 
 CONFIG = _DYNAMIC_ENV_CONFIG()
 
 
 TITLE_SYSTEM_PROMPT = """\
-Provide an appropriate, consice, title for this conversation. The conversation is in JSON form with roles 'system' (or 'developer'), 'human', and 'ai'.
+Provide an appropriate, concise title for this conversation. The conversation is in JSON form with roles 'system' (or 'developer'), 'user', and 'assistant'.
 
 - Aim for fewer than 5 words but absolutely no more than 10.
 - Be as concise as possible without losing the context of the conversation.
@@ -102,9 +119,10 @@ Provide an appropriate, consice, title for this conversation. The conversation i
 MAX_FILENAME_CHAR = 240
 
 FLAG2ROLE = {
-    "--- system ---": SystemMessage,
-    "--- user ---": HumanMessage,
-    "--- assistant ---": AIMessage,
+    "--- system ---": "system",
+    "--- developer ---": "developer",
+    "--- user ---": "user",
+    "--- assistant ---": "assistant",
 }
 
 CONVO_PATTERN = re.compile(
@@ -117,78 +135,269 @@ DEFAULT_FILEPATH = "New Conversation.md"
 TEST_MODE = False
 
 
+def _test_mode_enabled():
+    return TEST_MODE or os.environ.get("TEXTLLM_TEST_MODE") == "1"
+
+
+def _message_text(message):
+    content = message["content"]
+    if isinstance(content, str):
+        return content
+
+    text = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            text.append(block.get("text", ""))
+    return "\n".join(text)
+
+
+def _message_image_count(message):
+    content = message["content"]
+    if not isinstance(content, list):
+        return 0
+    return sum(
+        1
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "image_url"
+    )
+
+
+@dataclass
+class LLMResponse:
+    """Normalized text response returned from the model boundary."""
+
+    content: str
+    usage_metadata: dict | None = None
+
+
+def _deterministic_response_content(messages):
+    user_messages = [msg for msg in messages if msg["role"] == "user"]
+    system_text = "\n".join(
+        _message_text(msg) for msg in messages if msg["role"] == "system"
+    )
+
+    if not user_messages:
+        return "title set automatically"
+
+    if 'nothing but "hello"' in system_text.lower():
+        return "hello"
+
+    image_count = sum(_message_image_count(msg) for msg in user_messages)
+    last_text = _message_text(user_messages[-1]).strip()
+    words = re.findall(r"\b[\w'-]+\b", last_text)
+    final_word = words[-1].strip("'\"") if words else ""
+    response_count = len(user_messages)
+    if messages[-1]["role"] != "user":
+        response_count += 1
+
+    base = f"{response_count} user messages. " f"Last message ended with: {final_word}"
+    if image_count:
+        return f"saw {image_count} images. {base}"
+    return base
+
+
+def _iter_test_chunks(messages):
+    content = _deterministic_response_content(messages)
+    parts = re.findall(r"\S+\s*", content)
+    if not parts:
+        parts = [""]
+    yield from parts
+
+
+def _chunk_text(chunk):
+    """Extract streamed text from a LiteLLM/OpenAI-style streaming chunk."""
+    try:
+        delta = chunk["choices"][0]["delta"]
+        return delta.get("content") or ""
+    except (KeyError, IndexError, TypeError):
+        pass
+
+    try:
+        delta = chunk.choices[0].delta
+        return getattr(delta, "content", None) or ""
+    except (AttributeError, IndexError, TypeError):
+        return ""
+
+
+def _chunk_usage(chunk):
+    """Extract usage metadata when a provider includes it in a stream chunk."""
+    try:
+        return chunk.get("usage")
+    except AttributeError:
+        return getattr(chunk, "usage", None)
+
+
+def iter_completion_text(*, model, messages, settings):
+    if _test_mode_enabled():
+        log.info("Using deterministic test chat model")
+        for text in _iter_test_chunks(messages):
+            yield text, None
+        return
+
+    from litellm import completion
+
+    stream = completion(
+        model=model,
+        messages=messages,
+        stream=True,
+        **settings,
+    )
+    for chunk in stream:
+        text = _chunk_text(chunk)
+        usage = _chunk_usage(chunk)
+        yield text, usage
+
+
+def _content_blocks(content):
+    if isinstance(content, list):
+        return content.copy()
+    return [{"type": "text", "text": content}]
+
+
+def _merge_content(first, second):
+    if isinstance(first, str) and isinstance(second, str):
+        return f"{first}\n\n{second}"
+
+    blocks = _content_blocks(first)
+    if blocks and blocks[-1].get("type") == "text":
+        blocks[-1] = blocks[-1].copy()
+        blocks[-1]["text"] = f"{blocks[-1].get('text', '')}\n\n"
+    else:
+        blocks.append({"type": "text", "text": "\n\n"})
+    blocks.extend(_content_blocks(second))
+    return blocks
+
+
+def merge_message_runs(messages):
+    """Merge adjacent messages with the same role.
+
+    This mirrors the LangChain behavior textllm used before the LiteLLM
+    migration while keeping messages as provider-friendly dictionaries.
+    """
+    merged = []
+    for message in messages:
+        if merged and merged[-1]["role"] == message["role"]:
+            merged[-1] = {
+                "role": merged[-1]["role"],
+                "content": _merge_content(
+                    merged[-1]["content"],
+                    message["content"],
+                ),
+            }
+            continue
+        merged.append(message.copy())
+    return merged
+
+
 class Conversation:
+    """Read, parse, update, and optionally rename a textllm conversation file.
+
+    Parameters
+    ----------
+    filepath : str or path-like
+        Path to a Markdown conversation file in textllm format.
+    """
+
     def __init__(self, filepath):
         self.filepath = self.filepath0 = filepath
 
-        # Read and truncate file
+        # Read and strip trailing whitespace before parsing.
         with open(self.filepath, "rt") as fp:
             self.text = fp.read().rstrip()
 
         self.parsed = loads(self.text)
         self.messages = self.process_conversation()
 
-    def call_llm(self, messages, stream_model=False, **new_settings):
+    def call_llm(self, messages, *, print_stream=False, **new_settings):
+        """Call the configured chat model.
+
+        Parameters
+        ----------
+        messages : list
+            OpenAI-style message dictionaries to send to the model.
+        print_stream : bool, optional
+            Whether to print response chunks to stdout while collecting them.
+        **new_settings
+            Settings that override the conversation settings for this call.
+
+        Returns
+        -------
+        LLMResponse
+            Normalized model response.
+        """
         settings = self.settings.copy() | new_settings
         log.debug(f"Settings {settings}")
 
         model = settings.pop("model")  # Will KeyError if not set as expected
-        try:
-            model_provider, model_name = model.split(":", 1)
-        except ValueError:
-            model_provider = None
-            model_name = model
-            log.debug(f"{model!r} does not contain a provider. Will try to infer")
+        log.debug(f"{model = }")
 
-        log.debug(f"{model_provider = } {model_name = }")
+        content = []
+        usage_metadata = None
+        if print_stream:
+            print("\n", end="", flush=True)
+        for chunk_text, chunk_usage in iter_completion_text(
+            model=model,
+            messages=messages,
+            settings=settings,
+        ):
+            content.append(chunk_text)
+            if chunk_usage:
+                usage_metadata = chunk_usage
+            if print_stream:
+                print(chunk_text, end="", flush=True)
+        if print_stream:
+            print("\n\n", end="", flush=True)
 
-        chat_model = init_chat_model(
-            model=model_name,
-            model_provider=model_provider,
-            **settings,
+        response_text = "".join(content)
+        if not response_text:
+            raise ValueError("Model stream did not include text content")
+
+        response = LLMResponse(
+            content=response_text,
+            usage_metadata=usage_metadata,
         )
 
-        if stream_model:
-            try:
-                stream = chat_model.stream(messages, stream_usage=True)
-                chunk = response = next(stream)
-            except:
-                stream = chat_model.stream(messages)
-                chunk = response = next(stream)
-
-            print("\n" + chunk.content, end="", flush=True)
-            for chunk in stream:
-                response += chunk
-                print(chunk.content, end="", flush=True)
-            print("\n\n", end="", flush=True)
-        else:
-            response = chat_model.invoke(messages)
-
         try:
+            usage = response.usage_metadata
+            input_tokens = usage.get("input_tokens", usage.get("prompt_tokens"))
+            output_tokens = usage.get("output_tokens", usage.get("completion_tokens"))
+            total_tokens = usage.get("total_tokens")
             logtxt = (
                 f"tokens: "
-                f"prompt {response.usage_metadata['input_tokens']}, "
-                f"completion {response.usage_metadata['output_tokens']}, "
-                f"total {response.usage_metadata['total_tokens']}"
+                f"prompt {input_tokens}, "
+                f"completion {output_tokens}, "
+                f"total {total_tokens}"
             )
             log.debug(logtxt)
-        except:
-            # The above seems to only work well with OpenAI.
-            # ToDO: Fix this
+        except AttributeError:
+            # Usage details are provider-dependent in streamed responses.
             pass
 
         return response
 
-    def chat(self, require_user_prompt=True, stream_model=False):
-        if require_user_prompt and (
-            not self.messages or not isinstance(self.messages[-1], HumanMessage)
-        ):
-            raise NoHumanMessageError("Must have a new user message")
+    def chat(self, require_user_prompt=True):
+        """Append one assistant response to the conversation file.
 
-        response = self.call_llm(messages=self.messages, stream_model=stream_model)
+        Parameters
+        ----------
+        require_user_prompt : bool, optional
+            Require the current conversation to end with a user message.
+
+        Raises
+        ------
+        NoUserMessageError
+            If `require_user_prompt` is true and the conversation does not end
+            with a user message.
+        """
+        if require_user_prompt and (
+            not self.messages or self.messages[-1]["role"] != "user"
+        ):
+            raise NoUserMessageError("Must have a new user message")
+
+        response = self.call_llm(messages=self.messages, print_stream=True)
 
         # Not really needed but in case I do more with it later
-        self.messages.append(response)
+        self.messages.append({"role": "assistant", "content": response.content})
 
         # Add escapes to flags in the content
         content = response.content
@@ -222,20 +431,21 @@ class Conversation:
             log.info(f"Updated {self.filepath!r}")
 
     def set_title(self):
+        """Replace the auto-title marker with a generated title when present."""
         top, rest = self.text.split("\n", 1)
         if AUTO_TITLE not in top:
             log.debug(f"{AUTO_TITLE!r} not found in first line.")
             return  # This will happen nearly every time but the first
 
         new = [
-            SystemMessage(content=TITLE_SYSTEM_PROMPT),
-            HumanMessage(content=json.dumps(self.parsed["conversation"])),
+            {"role": "system", "content": TITLE_SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps(self.parsed["conversation"])},
         ]
 
-        if TEST_MODE:  # For testing, I don't want to provide this
+        if _test_mode_enabled():  # For testing, I don't want to provide this
             del new[1]
 
-        response = self.call_llm(messages=new, **self.settings)
+        response = self.call_llm(messages=new)
         title = response.content
 
         top = top.replace(AUTO_TITLE, title)
@@ -246,11 +456,24 @@ class Conversation:
 
     @cached_property
     def settings(self):
+        """dict: Conversation settings merged onto template defaults."""
         defaults = Conversation.read_settings(CONFIG.TEMPLATE)
         return defaults | self.parsed["settings"]
 
     @staticmethod
     def read_settings(text):
+        """Read the first TOML fenced code block from Markdown text.
+
+        Parameters
+        ----------
+        text : str
+            Markdown text that may contain a TOML fenced code block.
+
+        Returns
+        -------
+        dict
+            Parsed TOML settings, or an empty dictionary when none are found.
+        """
         pattern = re.compile(
             r"""
                 ^```          # Start of line with fenced code block
@@ -274,6 +497,19 @@ class Conversation:
 
     @staticmethod
     def loads(text):
+        """Parse textllm Markdown into title, settings, top matter, and messages.
+
+        Parameters
+        ----------
+        text : str
+            Markdown conversation text.
+
+        Returns
+        -------
+        dict
+            Parsed conversation data with `title`, `settings`, `top`, and
+            `conversation` keys.
+        """
         res = {}
 
         split_text = CONVO_PATTERN.split(text)
@@ -311,6 +547,14 @@ class Conversation:
         return res
 
     def process_conversation(self):
+        """Convert parsed conversation blocks into OpenAI-style messages.
+
+        Returns
+        -------
+        list
+            Merged message dictionaries with Markdown images converted to image
+            URL content blocks.
+        """
         conversation = []
         for item in self.parsed["conversation"]:
             flag = f"--- {item['role']} ---"
@@ -325,14 +569,18 @@ class Conversation:
 
             msg, img_urls = process_msg_for_images(msg_lines)
 
-            content = [{"type": "text", "text": msg}]
+            if img_urls:
+                content = [{"type": "text", "text": msg}]
+            else:
+                content = msg
+
             for img_url in img_urls:
-                item = {"type": "image_url"}
+                content_item = {"type": "image_url"}
                 if re.match("https?://.*", img_url, flags=re.IGNORECASE):
-                    item["image_url"] = {"url": img_url}
+                    content_item["image_url"] = {"url": img_url}
                     log.debug(f"Found image with URL: {img_url!r}")
                 elif img_url.lower().startswith("data:"):
-                    item["image_url"] = {"url": img_url}
+                    content_item["image_url"] = {"url": img_url}
                     log.debug(f"Found 'data:<...>' URL")
                 else:
                     # Need to load it relative to the file
@@ -341,17 +589,18 @@ class Conversation:
                     with open(img_path, "rb") as fp:
                         data = fp.read()
                         img_data = base64.b64encode(data).decode("utf-8")
-                        item["image_url"] = {
+                        content_item["image_url"] = {
                             "url": f"data:{mime_type};base64,{img_data}"
                         }
                     log.debug(f"Found image {img_path!r}, {len(data)} bytes")
-                content.append(item)
+                content.append(content_item)
 
-            conversation.append(FLAG2ROLE[flag.lower()](content=content))
+            conversation.append({"role": FLAG2ROLE[flag.lower()], "content": content})
 
         return merge_message_runs(conversation)
 
     def rename_by_title(self):
+        """Rename the conversation file from its title when safe to do so."""
         dirname = os.path.dirname(self.filepath)
         ext = os.path.splitext(self.filepath)[1]
 
@@ -386,6 +635,22 @@ loads = Conversation.loads
 
 
 def file_edit(filepath, *, prompt, editor):
+    """Apply prompt/editor changes to a conversation file.
+
+    Parameters
+    ----------
+    filepath : str or path-like
+        File to update.
+    prompt : str
+        Prompt text to append before opening an editor.
+    editor : bool
+        Whether to open `$TEXTLLM_EDITOR`.
+
+    Returns
+    -------
+    bool
+        True if the file changed; false otherwise.
+    """
     size0 = os.path.getsize(filepath)
     mtime0 = os.path.getmtime(filepath)
 
@@ -408,8 +673,11 @@ def file_edit(filepath, *, prompt, editor):
         # Use shlex.split in case there are flags with the environment variable
         editcmd = shlex.split(CONFIG.TEXTLLM_EDITOR) + [filepath]
         log.debug(f"Calling: {editcmd!r}")
-        with open("/dev/tty", "r") as tty:
-            subprocess.run(editcmd, stdin=tty, check=True)
+        if _test_mode_enabled():
+            subprocess.run(editcmd, check=True)
+        else:
+            with open("/dev/tty", "r") as tty:
+                subprocess.run(editcmd, stdin=tty, check=True)
 
     size1 = os.path.getsize(filepath)
     mtime1 = os.path.getmtime(filepath)
@@ -419,6 +687,19 @@ def file_edit(filepath, *, prompt, editor):
 
 
 def process_msg_for_images(lines):
+    """Separate Markdown image references from message text.
+
+    Parameters
+    ----------
+    lines : list of str
+        Message lines to inspect.
+
+    Returns
+    -------
+    tuple
+        `(text, image_urls)` where `text` excludes standalone Markdown image
+        lines outside fenced code blocks.
+    """
     # Regex to capture markdown images
     image_regex = re.compile(
         r"""
@@ -474,14 +755,38 @@ def process_msg_for_images(lines):
 ############ Filename Utils ############
 ########################################
 def clean_filepath(filepath):
-    """'/path/to/file (1).ext --> '/path/to/file.ext'"""
+    """Remove a numeric duplicate suffix from a path.
+
+    Parameters
+    ----------
+    filepath : str or path-like
+        Path that may end with a duplicate suffix like ` (1)`.
+
+    Returns
+    -------
+    str
+        Path with the duplicate suffix removed before the extension.
+    """
     base, ext = os.path.splitext(filepath)
     cleaned_filepath = re.sub(r" \(\d+\)$", "", base) + ext
     return cleaned_filepath
 
 
 def title2filename(title, ext=".md"):
-    """Take a title and process it to a filename."""
+    """Convert a Markdown title to a filesystem-safe filename.
+
+    Parameters
+    ----------
+    title : str
+        Conversation title, with or without a leading Markdown heading marker.
+    ext : str, optional
+        Extension to append to the filename.
+
+    Returns
+    -------
+    str
+        Sanitized filename.
+    """
     invalid_chars = set(
         "\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12\x13"
         '\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f"*/:<>?\\|'
@@ -494,7 +799,23 @@ def title2filename(title, ext=".md"):
 
 
 def uniqueify_filepath(filepath):
-    """Ensure filepath doesn't exist by adding (n) to the name"""
+    """Return a non-existing path by adding a numeric suffix when needed.
+
+    Parameters
+    ----------
+    filepath : str or path-like
+        Desired path.
+
+    Returns
+    -------
+    str
+        `filepath`, or a suffixed variant, that does not already exist.
+
+    Raises
+    ------
+    ValueError
+        If no unique path is found within 99 suffix attempts.
+    """
     filepath0 = filepath
     dirname, filename = os.path.split(filepath)
     base, ext = os.path.splitext(filename)
@@ -517,15 +838,41 @@ def uniqueify_filepath(filepath):
 
 
 def grouper(iterable, n, *, fillvalue=None):
+    """Collect data into fixed-length chunks.
+
+    Parameters
+    ----------
+    iterable : iterable
+        Values to group.
+    n : int
+        Chunk size.
+    fillvalue : object, optional
+        Value used to pad the last chunk.
+
+    Returns
+    -------
+    iterator
+        Iterator of `n`-tuples.
+    """
     iterators = [iter(iterable)] * n
     return itertools.zip_longest(*iterators, fillvalue="")
 
 
-class NoHumanMessageError(ValueError):
-    """Error when a conversation doesn't end with a HumanMessage"""
+class NoUserMessageError(ValueError):
+    """Error when a conversation does not end with a user message."""
+
+
+NoHumanMessageError = NoUserMessageError
 
 
 def cli(argv=None):
+    """Run the textllm command-line interface.
+
+    Parameters
+    ----------
+    argv : list of str, optional
+        Command-line arguments. Defaults to `sys.argv[1:]`.
+    """
     if argv is None:
         argv = sys.argv[1:]
 
@@ -540,9 +887,9 @@ def cli(argv=None):
         nargs="?",
         default=None,
         help=f"""
-            Specifies the input file in the noted format. If not provided, the default 
-            file {DEFAULT_FILEPATH!r} will be used, with an incremented filename to 
-            ensure uniqueness. If you specify an existing directory, {DEFAULT_FILEPATH!r} 
+            Specifies the input file in the noted format. If not provided, the default
+            file {DEFAULT_FILEPATH!r} will be used, with an incremented filename to
+            ensure uniqueness. If you specify an existing directory, {DEFAULT_FILEPATH!r}
             will be created in that directory.
             """,
     )
@@ -550,9 +897,9 @@ def cli(argv=None):
     parser.add_argument(
         "--env",
         help="""
-            Specify an additional environment file to load. Note, %(prog)s will 
-            also look for a .env file and from $TEXTLLM_ENV_PATH. 
-            
+            Specify an additional environment file to load. Note, %(prog)s will
+            also look for a .env file and from $TEXTLLM_ENV_PATH.
+
             Useful for storing API keys""",
     )
 
@@ -563,7 +910,7 @@ def cli(argv=None):
         help=f"""
             [%(default)s] How to set the title. If 'auto', will replace {AUTO_TITLE!r}
             with the generated title. If 'only', will only replace the title and
-            not continue the chat. If 'off', will not update the title (or rename). 
+            not continue the chat. If 'off', will not update the title (or rename).
             The title is the first line.
             """,
     )
@@ -574,7 +921,7 @@ def cli(argv=None):
         action=argparse.BooleanOptionalAction,
         default=True,
         help="""
-            [%(default)s] Whether or not to require there be a user prompt at the end of 
+            [%(default)s] Whether or not to require there be a user prompt at the end of
             the messages.
         """,
     )
@@ -588,16 +935,6 @@ def cli(argv=None):
             Rename the file based on the title. The title must NOT have {AUTO_TITLE!r}
             in it. Will increment the filename as needed if one already exists.
             If a filename is specified, default is False. If filename is not specified, default is True.
-        """,
-    )
-
-    parser.add_argument(
-        "--stream",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help=f"""
-            [%(default)s] Whether or not to stream the model response to stdout in 
-            addition to writing it to file. 
         """,
     )
 
@@ -620,7 +957,7 @@ def cli(argv=None):
         description="""
             These options let you add the prompt and/or edit the file directly
             before calling the LLM. Note it is assumed that a '--- User ---'
-            heading is present (as it should be by default). 
+            heading is present (as it should be by default).
             """,
     )
     edit.add_argument(
@@ -628,7 +965,7 @@ def cli(argv=None):
         metavar="text",
         default="",
         help="""
-            Prompt text to add. Will be included if --edit. 
+            Prompt text to add. Will be included if --edit.
         """,
     )
     edit.add_argument(
@@ -666,7 +1003,7 @@ def cli(argv=None):
 
     log.handlers.clear()
     log.addHandler(console_handler)
-    if TEST_MODE:
+    if _test_mode_enabled():
         logfile = f"{args.filepath}.log" if args.filepath else "log"
         try:
             os.makedirs(os.path.dirname(logfile))
@@ -697,7 +1034,7 @@ def cli(argv=None):
     # Handle default --rename
     if args.rename is None:
         args.rename = args.filepath is None or os.path.isdir(args.filepath)
-        log.debug("Settings --rename to {args.rename}.")
+        log.debug(f"Settings --rename to {args.rename}.")
 
     # Handle edit modes.
     args.prompt = args.prompt.strip()
@@ -713,7 +1050,7 @@ def cli(argv=None):
     try:
         if args.filepath is None:
             args.filepath = uniqueify_filepath(DEFAULT_FILEPATH)
-            log.debug(f"No filepath speciried. Set {args.filepath!r}")
+            log.debug(f"No filepath specified. Set {args.filepath!r}")
         elif os.path.isdir(args.filepath):
             fp = os.path.join(args.filepath, DEFAULT_FILEPATH)
             args.filepath = uniqueify_filepath(fp)
@@ -725,7 +1062,7 @@ def cli(argv=None):
             with open(filepath, "xt") as fp:
                 if CONFIG.TEXTLLM_TEMPLATE_FILE:
                     with open(CONFIG.TEXTLLM_TEMPLATE_FILE, "rt") as fp2:
-                        fp.write(fp2.read())
+                        fp.write(CONFIG.render_template(fp2.read()))
                 else:
                     fp.write(CONFIG.TEMPLATE)
             log.info(f"{filepath!r} does not exist. Created template.")
@@ -744,24 +1081,21 @@ def cli(argv=None):
         if args.title != "off":
             convo.set_title()  # Will do nothing if AUTO_TITLE not in the top line
         if args.title == "only":
-            if TEST_MODE:
+            if _test_mode_enabled():
                 return convo
             return
 
-        convo.chat(
-            require_user_prompt=args.require_user_prompt,
-            stream_model=args.stream,
-        )
+        convo.chat(require_user_prompt=args.require_user_prompt)
 
         if args.rename:
             convo.rename_by_title()
 
-        if TEST_MODE:
+        if _test_mode_enabled():
             return convo
 
     except Exception as E:
         log.error(E)
-        if levels[level_index] == logging.DEBUG or TEST_MODE:
+        if levels[level_index] == logging.DEBUG or _test_mode_enabled():
             raise
         sys.exit(1)
 

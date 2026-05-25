@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.0 (2026-05-25)
+
+**Potentially Breaking Change!!!**
+
+- Replaced LangChain with LiteLLM for streamed model calls
+- Changed model settings to LiteLLM-style strings such as `openai/gpt-5.5`
+- Removed `--stream` and `--no-stream`; chat responses now always stream to stdout while being written to the file
+- Added `--- Developer ---` role support and local adjacent same-role message merging
+- Kept text-only assistant persistence while preserving image input support
+- Moved secondary docs into `docs/` and added a LiteLLM migration guide and roadmap
+- Modernized packaging into `pyproject.toml`, removed `setup.py`, and updated runtime dependencies to `litellm` and `python-dotenv`
+
+## 0.6.3 (2026-05-24)
+
+- Added public docstrings and refreshed documentation formatting
+- Updated README examples for the current default model and template
+
 ## 0.6.2 (2025-06-13)
 
 - Title calls now use the same settings
@@ -33,12 +50,12 @@ Introduces (and tests) the ability to parse Markdown images
 
 - Removed environment settings `$TEXTLLM_AUTO_RENAME` and `$TEXTLLM_STREAM` because as I use it, I don't see the utility. `--rename` default is based on whether a file is specified. There is little reason to universally set --no-stream.
 
-Shorted the default system prompt and cleanup help message
+Shortened the default system prompt and cleanup help message
 
 ## 0.3.0 (2025-02-05)
 
 - Made specifying a filename optional. Instead, will create a new file. If an *existing* directory is specified, will create the new file there.
-    - `--rename` defaults to True if a new file is created. Still defaults to `$TEXTLLM_AUTO_RENAME` otherwise which itself defaults to False
+  - `--rename` defaults to True if a new file is created. Still defaults to `$TEXTLLM_AUTO_RENAME` otherwise which itself defaults to False
 - Removed `--create` setting. Specifying a new file is all that is needed.
 - Removed the double `--edit` where it opened up again. I think it's not worth it. Better to just have the user submit again.
 

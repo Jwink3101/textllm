@@ -1,6 +1,35 @@
 [build-system]
-requires = ["setuptools>=40.0.0", "wheel"]
+requires = ["setuptools>=61.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "textllm"
+version = "0.7.0"
+description = "Simple text file based interface to LLMs"
+readme = "readme.md"
+requires-python = ">=3.11"
+license = { file = "license" }
+authors = [
+    { name = "Justin Winokur", email = "Jwink3101@users.noreply.github.com" },
+]
+dependencies = [
+    "litellm",
+    "python-dotenv",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/Jwink3101/textllm"
+
+[project.scripts]
+textllm = "textllm:cli"
+
+[tool.setuptools]
+py-modules = ["textllm"]
 
 [tool.isort]
 profile = "black"
