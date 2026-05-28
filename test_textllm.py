@@ -5,6 +5,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import types
 from functools import cached_property
 from pathlib import Path
 from textwrap import dedent
@@ -319,9 +320,7 @@ def test_default_settings():
         env["TEXTLLM_DEFAULT_MODEL"] = "openai/gpt-4o-mini"
         env["TEXTLLM_TEMPLATE_FILE"] = "testdir/template.md"
         with open("testdir/template.md", "wt") as fp:
-            fp.write(
-                dedent(
-                    """
+            fp.write(dedent("""
                 # no title
                 ```toml
                 model = "{model}"
@@ -333,9 +332,7 @@ def test_default_settings():
                 Respond with nothing but "hello" (without quotes). DO NOT DEVIATE from this
                 --- User ---
                 
-                """
-                )
-            )
+                """))
         subprocess.call([sys.executable, "textllm.py", "testdir/new.md"], env=env)
         with open("testdir/new.md", "rt") as fp:
             template = fp.read()
@@ -373,14 +370,10 @@ def test_images():
 
     shutil.copy2("testdir/template.md", "testdir/one.md")
     with open("testdir/one.md", "at") as fp:
-        fp.write(
-            dedent(
-                """
+        fp.write(dedent("""
             ![backup](traeh.png "My Title")
             Describe this image
-            """
-            )
-        )
+            """))
 
     out, log = run_cli(["testdir/one.md"])
     assert "saw 1 images" in out.lower()
@@ -388,9 +381,7 @@ def test_images():
 
     shutil.copy2("testdir/template.md", "testdir/two.md")
     with open("testdir/two.md", "at") as fp:
-        fp.write(
-            dedent(
-                """
+        fp.write(dedent("""
             Describe this image in ONE WORD:
             ![](worra.jpg)
             
@@ -398,9 +389,7 @@ def test_images():
             ![backup](traeh.png "My Title")
             
             How many images were there?
-            """
-            )
-        )
+            """))
 
     out, log = run_cli(["testdir/two.md"])
     assert "saw 2 images" in out.lower()
@@ -415,15 +404,11 @@ def test_images():
     with open("testdir/three.md", "at") as fp, open("testdir/worra.jpg", "rb") as img:
         data = img.read()
         bdata = base64.b64encode(data).decode()
-        fp.write(
-            dedent(
-                f"""
+        fp.write(dedent(f"""
                 Describe this image. Make sure to include the color.
                 
                 ![Alt text](data:image/jpg;base64,{bdata})
-                """
-            )
-        )
+                """))
     out, log = run_cli(["testdir/three.md"])
     assert "saw 1 images" in out.lower()
     assert "Found 'data:<...>' URL" in log
@@ -435,9 +420,7 @@ def test_developer_role_and_adjacent_merge():
     clean()
     try:
         os.makedirs("testdir")
-        Path("testdir/dev.md").write_text(
-            dedent(
-                """
+        Path("testdir/dev.md").write_text(dedent("""
                 # dev role
 
                 ```toml
@@ -459,9 +442,7 @@ def test_developer_role_and_adjacent_merge():
                 --- User ---
 
                 Second message
-                """
-            ).strip()
-        )
+                """).strip())
 
         convo = textllm.Conversation("testdir/dev.md")
         assert [msg["role"] for msg in convo.messages] == [
@@ -539,9 +520,7 @@ def test_call_llm_usage_and_empty_stream(monkeypatch):
     clean()
     try:
         os.makedirs("testdir")
-        Path("testdir/call.md").write_text(
-            dedent(
-                """
+        Path("testdir/call.md").write_text(dedent("""
                 # call
 
                 ```toml
@@ -551,9 +530,7 @@ def test_call_llm_usage_and_empty_stream(monkeypatch):
                 --- User ---
 
                 hello
-                """
-            ).strip()
-        )
+                """).strip())
         convo = textllm.Conversation("testdir/call.md")
 
         def fake_stream(*, model, messages, settings):
@@ -575,19 +552,43 @@ def test_call_llm_usage_and_empty_stream(monkeypatch):
         clean()
 
 
+def test_iter_completion_text_suppresses_litellm_debug_info(monkeypatch):
+    fake_litellm = types.SimpleNamespace(
+        suppress_debug_info=False,
+        set_verbose=True,
+    )
+
+    def fake_completion(*, model, messages, stream, **settings):
+        assert fake_litellm.suppress_debug_info is True
+        assert fake_litellm.set_verbose is False
+        assert stream is True
+        yield {"choices": [{"delta": {"content": "ok"}}]}
+
+    fake_litellm.completion = fake_completion
+    monkeypatch.setitem(sys.modules, "litellm", fake_litellm)
+    monkeypatch.setenv("TEXTLLM_TEST_MODE", "0")
+    monkeypatch.setattr(textllm, "TEST_MODE", False)
+
+    chunks = list(
+        textllm.iter_completion_text(
+            model="openai/gpt-4o-mini",
+            messages=[{"role": "user", "content": "hello"}],
+            settings={},
+        )
+    )
+
+    assert chunks == [("ok", None)]
+
+
 def test_parser_edges_and_image_code_blocks():
     assert textllm.Conversation.read_settings("No settings here") == {}
 
-    parsed = textllm.loads(
-        dedent(
-            r"""
+    parsed = textllm.loads(dedent(r"""
             --- User ---
 
             \--- User ---
             This is literal marker text.
-            """
-        ).strip()
-    )
+            """).strip())
     assert parsed["title"] == ""
     assert parsed["conversation"] == [
         {

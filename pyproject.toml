@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "textllm"
-version = "0.7.0"
+dynamic = ["version"]
 description = "Simple text file based interface to LLMs"
 readme = "readme.md"
 requires-python = ">=3.11"
@@ -30,6 +30,9 @@ textllm = "textllm:cli"
 
 [tool.setuptools]
 py-modules = ["textllm"]
+
+[tool.setuptools.dynamic]
+version = { attr = "textllm.__version__" }
 
 [tool.isort]
 profile = "black"

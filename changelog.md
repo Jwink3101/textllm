@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1 (2026-05-27)
+
+* *Minor*: Remove LiteLLM messages when streaming
+
 ## 0.7.0 (2026-05-25)
 
 **Potentially Breaking Change!!!**

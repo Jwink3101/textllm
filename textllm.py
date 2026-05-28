@@ -23,7 +23,7 @@ os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 from dotenv import load_dotenv  # pip install python-dotenv
 
-__version__ = "0.7.0"
+__version__ = "0.7.1"
 
 log = logging.getLogger("textllm")
 
@@ -227,6 +227,13 @@ def _chunk_usage(chunk):
         return getattr(chunk, "usage", None)
 
 
+def _configure_litellm(litellm):
+    """Keep LiteLLM diagnostics out of the streamed CLI response."""
+
+    litellm.suppress_debug_info = True
+    litellm.set_verbose = False
+
+
 def iter_completion_text(*, model, messages, settings):
     if _test_mode_enabled():
         log.info("Using deterministic test chat model")
@@ -234,9 +241,11 @@ def iter_completion_text(*, model, messages, settings):
             yield text, None
         return
 
-    from litellm import completion
+    import litellm
 
-    stream = completion(
+    _configure_litellm(litellm)
+
+    stream = litellm.completion(
         model=model,
         messages=messages,
         stream=True,
