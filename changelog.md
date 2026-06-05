@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.0 (2026-06-05)
+
+- Replaced LiteLLM with any-llm for streamed model calls.
+    - The move to LiteLLM turned out to add a lot of additional time to import so I moved to any_llm. As per the next bullet, should be an easy migration
+- Accepted both `provider/model` and `provider:model` model settings
+- Stream tokens to the file at the same time rather than afterwards
+
 ## 0.7.1 (2026-05-27)
 
 * *Minor*: Remove LiteLLM messages when streaming

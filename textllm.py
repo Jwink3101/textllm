@@ -19,11 +19,9 @@ from datetime import datetime
 from functools import cached_property
 from pathlib import Path
 
-os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
-
 from dotenv import load_dotenv  # pip install python-dotenv
 
-__version__ = "0.7.1"
+__version__ = "0.8.0"
 
 log = logging.getLogger("textllm")
 
@@ -205,7 +203,7 @@ def _iter_test_chunks(messages):
 
 
 def _chunk_text(chunk):
-    """Extract streamed text from a LiteLLM/OpenAI-style streaming chunk."""
+    """Extract streamed text from an OpenAI-style streaming chunk."""
     try:
         delta = chunk["choices"][0]["delta"]
         return delta.get("content") or ""
@@ -227,11 +225,16 @@ def _chunk_usage(chunk):
         return getattr(chunk, "usage", None)
 
 
-def _configure_litellm(litellm):
-    """Keep LiteLLM diagnostics out of the streamed CLI response."""
+def split_model_provider(model):
+    """Split a model setting into an any-llm provider and model id."""
 
-    litellm.suppress_debug_info = True
-    litellm.set_verbose = False
+    split_at = min(
+        (idx for idx in (model.find(":"), model.find("/")) if idx >= 0),
+        default=-1,
+    )
+    if split_at >= 0:
+        return model[:split_at], model[split_at + 1 :]
+    return None, model
 
 
 def iter_completion_text(*, model, messages, settings):
@@ -241,16 +244,19 @@ def iter_completion_text(*, model, messages, settings):
             yield text, None
         return
 
-    import litellm
+    from any_llm import completion
 
-    _configure_litellm(litellm)
-
-    stream = litellm.completion(
-        model=model,
+    provider, model_id = split_model_provider(model)
+    completion_kwargs = dict(
+        model=model_id,
         messages=messages,
         stream=True,
         **settings,
     )
+    if provider:
+        completion_kwargs["provider"] = provider
+
+    stream = completion(**completion_kwargs)
     for chunk in stream:
         text = _chunk_text(chunk)
         usage = _chunk_usage(chunk)
@@ -280,8 +286,8 @@ def _merge_content(first, second):
 def merge_message_runs(messages):
     """Merge adjacent messages with the same role.
 
-    This mirrors the LangChain behavior textllm used before the LiteLLM
-    migration while keeping messages as provider-friendly dictionaries.
+    This mirrors the behavior from earlier backends while keeping messages as
+    provider-friendly dictionaries.
     """
     merged = []
     for message in messages:
@@ -317,7 +323,14 @@ class Conversation:
         self.parsed = loads(self.text)
         self.messages = self.process_conversation()
 
-    def call_llm(self, messages, *, print_stream=False, **new_settings):
+    def call_llm(
+        self,
+        messages,
+        *,
+        print_stream=False,
+        stream_writer=None,
+        **new_settings,
+    ):
         """Call the configured chat model.
 
         Parameters
@@ -326,6 +339,8 @@ class Conversation:
             OpenAI-style message dictionaries to send to the model.
         print_stream : bool, optional
             Whether to print response chunks to stdout while collecting them.
+        stream_writer : file-like, optional
+            Writer that receives response chunks as they arrive.
         **new_settings
             Settings that override the conversation settings for this call.
 
@@ -354,6 +369,9 @@ class Conversation:
                 usage_metadata = chunk_usage
             if print_stream:
                 print(chunk_text, end="", flush=True)
+            if stream_writer:
+                stream_writer.write(chunk_text)
+                stream_writer.flush()
         if print_stream:
             print("\n\n", end="", flush=True)
 
@@ -403,41 +421,45 @@ class Conversation:
         ):
             raise NoUserMessageError("Must have a new user message")
 
-        response = self.call_llm(messages=self.messages, print_stream=True)
+        with open(self.filepath, "r+") as file:
+            self._seek_append_point(file)
+            file.write("\n\n--- Assistant ---  \n\n")
+            file.flush()
+
+            response = self.call_llm(
+                messages=self.messages,
+                print_stream=True,
+                stream_writer=file,
+            )
+
+            file.write("\n\n--- User ---  \n\n")
+            file.flush()
 
         # Not really needed but in case I do more with it later
         self.messages.append({"role": "assistant", "content": response.content})
+        log.info(f"Updated {self.filepath!r}")
 
-        # Add escapes to flags in the content
-        content = response.content
-        content = CONVO_PATTERN.sub(r"\\\1", content)
+    @staticmethod
+    def _seek_append_point(file):
+        """Seek to the end of existing content, ignoring trailing whitespace."""
+        file.seek(0, 2)
+        file_length = file.tell()
 
-        with open(self.filepath, "r+") as file:
-            # Move to the last non-white space up to 100
-            # characters
-            file.seek(0, 2)  # Move to the end of the file
-            file_length = file.tell()
-
-            MX = 100
-            for _ in range(MX):
-                if file_length == 0:
-                    break
-                file.seek(file_length - 1)
-                if not file.read(1).isspace():
-                    file.seek(file_length)  # Move forward character
-                    break
-                file_length -= 1
-
-            else:
-                log.debug(
-                    f"Did not find a non-whitespace character within the last {MX} "
-                    "characters."
-                )
-            file.write("\n\n--- Assistant ---  \n\n")
-            file.write(content)
-            file.write("\n\n--- User ---  \n\n")
-
-            log.info(f"Updated {self.filepath!r}")
+        MX = 100
+        for _ in range(MX):
+            if file_length == 0:
+                break
+            file.seek(file_length - 1)
+            if not file.read(1).isspace():
+                file.seek(file_length)
+                break
+            file_length -= 1
+        else:
+            log.debug(
+                f"Did not find a non-whitespace character within the last {MX} "
+                "characters."
+            )
+        file.truncate()
 
     def set_title(self):
         """Replace the auto-title marker with a generated title when present."""

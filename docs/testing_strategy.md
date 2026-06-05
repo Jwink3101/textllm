@@ -4,7 +4,7 @@ This project tests `textllm` as a local text-file workflow, not as a live model 
 
 ## Goals
 
-- Verify the CLI behavior users rely on: creating conversation files, appending prompts, always streaming output, setting titles, renaming files, reading stdin/editor input, loading templates, and applying environment defaults.
+- Verify the CLI behavior users rely on: creating conversation files, appending prompts, always streaming output to stdout and the conversation file, setting titles, renaming files, reading stdin/editor input, loading templates, and applying environment defaults.
 - Verify the Markdown conversation format: title parsing, TOML settings, role blocks, escaped role markers, adjacent role merging, and message conversion.
 - Verify image handling as transport behavior: Markdown image references are found, local files are read and converted to data URLs, embedded data URLs are preserved, and image blocks are passed to the model boundary.
 - Avoid spending money or requiring credentials in the main test suite.
@@ -12,11 +12,11 @@ This project tests `textllm` as a local text-file workflow, not as a live model 
 
 ## Method
 
-The automated suite uses a deterministic test stream instead of a live provider. Tests set `TEXTLLM_TEST_MODE=1`, and in-process tests also set `textllm.TEST_MODE = True`. In that mode, `iter_completion_text()` yields private deterministic chunks rather than importing and calling LiteLLM.
+The automated suite uses a deterministic test stream instead of a live provider. Tests set `TEXTLLM_TEST_MODE=1`, and in-process tests also set `textllm.TEST_MODE = True`. In that mode, `iter_completion_text()` yields private deterministic chunks rather than importing and calling any-llm.
 
 The fake stream sits at the model boundary. Production code still parses files, builds OpenAI-style message dictionaries, processes images, merges adjacent same-role messages, collects streamed chunks, writes responses, and runs rename/title logic. This keeps the tests focused on `textllm` behavior while removing live provider cost, latency, nondeterminism, and account setup.
 
-LiteLLM mocks are useful for targeted tests of LiteLLM-shaped chunk parsing when the dependency is available, but they should not replace `TEXTLLM_TEST_MODE=1` for subprocess tests or dynamic assertions. The subprocess suite needs deterministic behavior that survives a fresh Python interpreter.
+Backend mocks are useful for targeted tests of OpenAI-style chunk parsing, but they should not replace `TEXTLLM_TEST_MODE=1` for subprocess tests or dynamic assertions. The subprocess suite needs deterministic behavior that survives a fresh Python interpreter.
 
 The fake returns small deterministic responses derived from the actual messages it receives:
 
@@ -29,9 +29,9 @@ These responses are intentionally simple. They are not meant to simulate model r
 
 ## Streaming
 
-textllm always calls the model through a streaming path. Chat responses are printed to stdout while being collected for the conversation file. Title generation also uses the streaming path, but suppresses stdout so title chunks do not mix with the user-visible answer.
+textllm always calls the model through a streaming path. Chat responses are printed to stdout while response chunks are also written to the conversation file. Title generation also uses the streaming path, but suppresses stdout and file streaming so title chunks do not mix with the user-visible answer or conversation body.
 
-The fake stream yields deterministic text chunks so the default CLI path exercises chunk accumulation and stdout streaming. There is no non-streaming CLI mode.
+The fake stream yields deterministic text chunks so the default CLI path exercises chunk accumulation, stdout streaming, and file streaming. There is no non-streaming CLI mode.
 
 ## Subprocess Tests
 

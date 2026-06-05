@@ -458,7 +458,7 @@ def test_developer_role_and_adjacent_merge():
         clean()
 
 
-def test_litellm_chunk_helpers_and_multimodal_merge():
+def test_chunk_helpers_and_multimodal_merge():
     class Delta:
         content = "object text"
 
@@ -552,20 +552,125 @@ def test_call_llm_usage_and_empty_stream(monkeypatch):
         clean()
 
 
-def test_iter_completion_text_suppresses_litellm_debug_info(monkeypatch):
-    fake_litellm = types.SimpleNamespace(
-        suppress_debug_info=False,
-        set_verbose=True,
-    )
+def test_chat_streams_chunks_to_file(monkeypatch):
+    clean()
+    try:
+        os.makedirs("testdir")
+        path = Path("testdir/stream.md")
+        path.write_text(dedent("""
+                # stream
 
-    def fake_completion(*, model, messages, stream, **settings):
-        assert fake_litellm.suppress_debug_info is True
-        assert fake_litellm.set_verbose is False
+                ```toml
+                model = "openai/gpt-4o-mini"
+                ```
+
+                --- User ---
+
+                hello
+                """).strip())
+        convo = textllm.Conversation(path)
+
+        def fake_stream(*, model, messages, settings):
+            yield "first ", None
+            text = path.read_text()
+            assert "--- Assistant ---" in text
+            assert "first " in text
+            assert "second" not in text
+            yield "second", None
+            yield "\n--- User ---", None
+
+        monkeypatch.setattr(textllm, "iter_completion_text", fake_stream)
+
+        with Capture() as cap:
+            convo.chat()
+
+        text = path.read_text()
+        assert cap.out.strip() == "first second\n--- User ---"
+        assert "first second\n--- User ---" in text
+        assert "\\--- User ---" not in text
+        assert text.endswith("--- User ---  \n\n")
+    finally:
+        clean()
+
+
+def test_seek_append_point_truncates_trailing_whitespace():
+    clean()
+    try:
+        os.makedirs("testdir")
+        path = Path("testdir/trim.md")
+        path.write_text("message\n\n   \n")
+
+        with path.open("r+") as fp:
+            textllm.Conversation._seek_append_point(fp)
+            fp.write(" appended")
+
+        assert path.read_text() == "message appended"
+    finally:
+        clean()
+
+
+def test_file_edit_adds_prompt_after_user_marker_without_trailing_newline():
+    clean()
+    try:
+        os.makedirs("testdir")
+        path = Path("testdir/prompt.md")
+        path.write_text("--- User ---")
+
+        assert textllm.file_edit(path, prompt="hello", editor=False)
+        assert path.read_text() == "--- User ---\nhello"
+    finally:
+        clean()
+
+
+def test_file_edit_uses_existing_blank_user_block():
+    clean()
+    try:
+        os.makedirs("testdir")
+        path = Path("testdir/prompt.md")
+        path.write_text("--- User ---  \n\n")
+
+        assert textllm.file_edit(path, prompt="hello", editor=False)
+        assert path.read_text() == "--- User ---  \n\nhello"
+    finally:
+        clean()
+
+
+def test_split_model_provider():
+    assert textllm.split_model_provider("openai/gpt-4o-mini") == (
+        "openai",
+        "gpt-4o-mini",
+    )
+    assert textllm.split_model_provider("openai:gpt-4o-mini") == (
+        "openai",
+        "gpt-4o-mini",
+    )
+    assert textllm.split_model_provider("openrouter/openai/gpt-4o-mini") == (
+        "openrouter",
+        "openai/gpt-4o-mini",
+    )
+    assert textllm.split_model_provider("openrouter:openai/gpt-4o-mini") == (
+        "openrouter",
+        "openai/gpt-4o-mini",
+    )
+    assert textllm.split_model_provider("gateway/model:variant") == (
+        "gateway",
+        "model:variant",
+    )
+    assert textllm.split_model_provider("gpt-4o-mini") == (None, "gpt-4o-mini")
+
+
+def test_iter_completion_text_uses_any_llm_provider_model(monkeypatch):
+    fake_any_llm = types.SimpleNamespace()
+
+    def fake_completion(*, model, provider, messages, stream, **settings):
+        assert provider == "openai"
+        assert model == "gpt-4o-mini"
         assert stream is True
+        assert settings == {"temperature": 0.5}
         yield {"choices": [{"delta": {"content": "ok"}}]}
 
-    fake_litellm.completion = fake_completion
-    monkeypatch.setitem(sys.modules, "litellm", fake_litellm)
+    fake_any_llm.completion = fake_completion
+    monkeypatch.setitem(sys.modules, "any_llm", fake_any_llm)
     monkeypatch.setenv("TEXTLLM_TEST_MODE", "0")
     monkeypatch.setattr(textllm, "TEST_MODE", False)
 
@@ -573,7 +678,7 @@ def test_iter_completion_text_suppresses_litellm_debug_info(monkeypatch):
         textllm.iter_completion_text(
             model="openai/gpt-4o-mini",
             messages=[{"role": "user", "content": "hello"}],
-            settings={},
+            settings={"temperature": 0.5},
         )
     )
 

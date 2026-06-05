@@ -1,5 +1,7 @@
 # Migrating to LiteLLM
 
+This is a historical migration guide for textllm 0.7.x. Current textllm releases use any-llm instead of LiteLLM; see [migration_any_llm.md](migration_any_llm.md) for current model naming and dependency guidance.
+
 textllm 0.7.0 replaces LangChain with LiteLLM. The Markdown conversation format is mostly unchanged, but model names, dependencies, and streaming behavior changed.
 
 ## Model Names
@@ -24,7 +26,7 @@ model = "ollama/llama3.1"
 model = "openrouter/openai/gpt-4o-mini"
 ```
 
-textllm does not translate the old `provider:model` form at runtime. Update existing conversation files before using them with 0.7.0.
+In textllm 0.7.0 only, textllm did not translate the old `provider:model` form at runtime, so existing conversation files needed to be updated before use. Current textllm releases use any-llm, prefer `provider/model`, and also accept `provider:model` for compatibility.
 
 ## Dependencies
 

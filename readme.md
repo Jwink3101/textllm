@@ -2,7 +2,7 @@
 
 This is a **SIMPLE** text-based interface to LLMs. It is not intended to be a general purpose or overly featureful tool. It is just an easy way to call an LLM and save results in a simple format (text/markdown). It can also read images referenced in the Markdown.
 
-textllm uses [LiteLLM][litellm] to interact with many AI models.
+textllm uses [any-llm][any-llm] to interact with many AI models.
 
 ## Setup
 
@@ -10,7 +10,7 @@ Install from PyPI:
 
     $ pip install textllm
 
-LiteLLM handles provider integrations. In most cases, install textllm and set the provider API key in the environment.
+any-llm handles provider integrations. In most cases, install textllm and set the provider API key in the environment.
 
 ## Usage
 
@@ -48,7 +48,7 @@ textllm will update the title if needed, stream the response to stdout, append t
 
 ### Streaming and Prompts
 
-You can use `--prompt` to specify the new prompt and/or `--edit` to open a terminal text editor before running. textllm always streams the response to stdout while also writing the collected response to the conversation file.
+You can use `--prompt` to specify the new prompt and/or `--edit` to open a terminal text editor before running. textllm always streams the response to stdout while also writing response chunks to the conversation file as they arrive.
 
 ## Titles and Names
 
@@ -78,7 +78,7 @@ For custom templates that should follow environment defaults for different model
 
 ### API Environment Variables and Loading
 
-LiteLLM usually reads provider API keys from environment variables. For example, OpenAI uses `$OPENAI_API_KEY`, Anthropic uses `$ANTHROPIC_API_KEY`, and Google uses `$GEMINI_API_KEY` or provider-specific LiteLLM settings.
+any-llm usually reads provider API keys from environment variables. For example, OpenAI uses `$OPENAI_API_KEY`, Anthropic uses `$ANTHROPIC_API_KEY`, and Google uses `$GEMINI_API_KEY` or provider-specific any-llm settings.
 
 These can be specified outside of textllm, but you can also store them in a file. You can tell textllm where to find that file in any or all of three ways:
 
@@ -88,17 +88,19 @@ These can be specified outside of textllm, but you can also store them in a file
 
 ## Models and Settings
 
-Any model understood by LiteLLM's [completion API][completion] can be used. The model should use LiteLLM's provider/model naming, for example:
+Any model understood by any-llm's completion API can be used. Prefer `provider/model` in textllm files. textllm also accepts `provider:model` for compatibility with any-llm examples and older LangChain-era files, and passes the provider and remaining model id to any-llm.
 
 ```toml
 model = "openai/gpt-5.5"
+model = "openai:gpt-5.5"
 model = "openai/gpt-4o-mini"
 model = "anthropic/claude-sonnet-4-5"
 model = "gemini/gemini-2.5-pro"
 model = "ollama/llama3.1"
+model = "openrouter/openai/gpt-4o-mini"
 ```
 
-All TOML settings except `model` are passed through to LiteLLM. Unsupported settings will fail at the LiteLLM or provider layer.
+All TOML settings except `model` are passed through to any-llm. Unsupported settings will fail at the any-llm or provider layer.
 
 ## Format Description
 
@@ -116,9 +118,9 @@ Generally, this is only set once, but if `!!AUTO TITLE!!` is added back to the f
 
 ### (2) Settings
 
-Specify settings in [TOML][toml] format inside a Markdown fenced code block. All settings are directly passed to LiteLLM, except for `model`, which textllm uses to select the model. The template settings are the default and conversation settings update them.
+Specify settings in [TOML][toml] format inside a Markdown fenced code block. All settings are directly passed to any-llm, except for `model`, which textllm uses to select the provider and model. The template settings are the default and conversation settings update them.
 
-Note that providers require API keys. Keys can be passed through settings when LiteLLM supports that, but environment variables or an environment file are usually better.
+Note that providers require API keys. Keys can be passed through settings when any-llm supports that, but environment variables or an environment file are usually better.
 
 ### (3) Conversation
 
@@ -138,13 +140,15 @@ The last "User" block is usually the question.
 The response.
 ```
 
-Generally, you want the final block to be the new `User` question, but it does not have to be if `--no-require-user-prompt` is used. A new `--- User ---` heading will be added after the last response. You can escape a block marker with a leading `\`; textllm will also do this automatically if a response contains a marker.
+Generally, you want the final block to be the new `User` question, but it does not have to be if `--no-require-user-prompt` is used. A new `--- User ---` heading will be added after the last response.
+
+Role markers such as `--- User ---` and `--- Assistant ---` are reserved syntax when they appear at the start of a line. In normal assistant responses this is unlikely to matter, but if a response literally includes one of these markers, textllm may interpret it as a new conversation block on the next run. Prefix the marker with a backslash, for example `\--- User ---`, when you want it treated as ordinary text.
 
 ## Tips and Tricks
 
 ### Images
 
-You can include images in the Markdown in normal format. Standalone image lines in user messages are converted into LiteLLM/OpenAI-style multimodal input blocks.
+You can include images in the Markdown in normal format. Standalone image lines in user messages are converted into OpenAI-style multimodal input blocks.
 
 ### Open Vim at Bottom
 
@@ -154,6 +158,7 @@ If using `--edit` to edit the file before submitting, it can be useful to open a
 
 ## More Docs
 
+- [any-llm migration guide](docs/migration_any_llm.md)
 - [LiteLLM migration guide](docs/migration_litellm.md)
 - [File format specification](docs/format_spec.md)
 - [Design](docs/design.md)
@@ -163,5 +168,4 @@ If using `--edit` to edit the file before submitting, it can be useful to open a
 
 [dotenv]: https://github.com/theskumar/python-dotenv
 [toml]: https://toml.io/
-[litellm]: https://docs.litellm.ai/
-[completion]: https://docs.litellm.ai/docs/completion/input
+[any-llm]: https://mozilla-ai.github.io/any-llm/

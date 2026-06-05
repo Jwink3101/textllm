@@ -2,7 +2,7 @@
 
 textllm is a small command-line tool for working with LLM conversations as ordinary Markdown files. Its central design choice is that the file is the user interface and the persistent state. The CLI reads the file, converts it into a model request, streams a response, and appends the result back to the same file.
 
-The tool is intentionally narrow. It is not a chat server, workspace manager, notebook, database-backed client, or provider abstraction layer of its own. LiteLLM handles provider integration; textllm handles the text-file workflow around it.
+The tool is intentionally narrow. It is not a chat server, workspace manager, notebook, database-backed client, or provider abstraction layer of its own. any-llm handles provider integration; textllm handles the text-file workflow around it.
 
 ## Goals
 
@@ -10,7 +10,7 @@ The tool is intentionally narrow. It is not a chat server, workspace manager, no
 - Keep the on-disk format readable Markdown with minimal structural syntax.
 - Avoid provider-specific code unless it is required for the file workflow.
 - Stream responses to stdout while preserving the final response in the conversation file.
-- Let users choose models and provider options through LiteLLM-compatible settings.
+- Let users choose models and provider options through any-llm-compatible settings.
 - Keep tests deterministic and free of provider credentials or live model cost.
 
 ## Non-Goals
@@ -20,7 +20,7 @@ The tool is intentionally narrow. It is not a chat server, workspace manager, no
 - Normalize every provider feature into a textllm-specific settings schema.
 - Store hidden conversation state outside the Markdown file.
 - Preserve rich assistant output that cannot currently be represented as text.
-- Implement model routing, retries, pricing policy, or account management beyond what LiteLLM provides.
+- Implement model routing, retries, pricing policy, or account management beyond what any-llm provides.
 
 ## Primary User Flow
 
@@ -32,9 +32,9 @@ The normal command flow is:
 4. Optionally open the file in the user's editor.
 5. Parse the Markdown file into settings and messages.
 6. Optionally replace `!!AUTO TITLE!!` on the first line with a generated title.
-7. Call the configured model through LiteLLM's streaming completion API.
-8. Print streamed response chunks to stdout.
-9. Append the collected assistant text and a fresh `--- User ---` block to the file.
+7. Call the configured model through any-llm's streaming completion API.
+8. Print streamed response chunks to stdout and write them into the conversation file.
+9. Append a fresh `--- User ---` block to the file.
 10. Optionally rename the file from the title.
 
 Creating a new file without edit or prompt input stops after writing the template. This gives users a chance to edit the system prompt and first user message before making a model call.
@@ -55,9 +55,9 @@ Template rendering is intentionally limited. Only documented placeholders are ex
 
 ### Settings
 
-Settings are loaded from the conversation's TOML block and merged over the default template settings. `model` is consumed by textllm to select the LiteLLM model. Other settings are passed to LiteLLM.
+Settings are loaded from the conversation's TOML block and merged over the default template settings. `model` is consumed by textllm to select the any-llm provider and model. Other settings are passed to any-llm.
 
-This keeps textllm small and avoids maintaining a provider setting allowlist. It also means invalid or unsupported provider settings usually fail at the LiteLLM or provider layer.
+This keeps textllm small and avoids maintaining a provider setting allowlist. It also means invalid or unsupported provider settings usually fail at the any-llm or provider layer.
 
 Environment variables supply defaults and provider credentials. Loading order is:
 
@@ -83,15 +83,15 @@ Assistant output is currently stored as text only.
 
 ### Model Boundary
 
-`iter_completion_text()` is the boundary between textllm and LiteLLM. In production, it calls `litellm.completion()` with `stream=True`, the selected model, the parsed messages, and the pass-through settings.
+`iter_completion_text()` is the boundary between textllm and any-llm. In production, it calls `any_llm.completion()` with `stream=True`, the selected provider and model, the parsed messages, and the pass-through settings.
 
 The rest of the code consumes a simple iterator of response text and optional usage metadata. This boundary keeps streaming collection, file writing, tests, and future backend changes isolated from provider-specific response objects.
 
-In deterministic test mode, the same boundary yields fake stream chunks instead of calling LiteLLM. Tests still exercise file creation, parsing, image conversion, message merging, streaming collection, title logic, and CLI subprocess behavior.
+In deterministic test mode, the same boundary yields fake stream chunks instead of calling any-llm. Tests still exercise file creation, parsing, image conversion, message merging, streaming collection, title logic, and CLI subprocess behavior.
 
 ## File Update Behavior
 
-textllm appends model output rather than rewriting the whole conversation during normal chat. Before writing the assistant block, it escapes any generated line that looks like a role marker so model output cannot accidentally create new conversation boundaries.
+textllm appends model output rather than rewriting the whole conversation during normal chat. It writes response chunks into the assistant block as they arrive, so an interrupted command can still leave partial assistant output in the file.
 
 The append format is:
 
@@ -104,6 +104,8 @@ assistant response
 ```
 
 This leaves the file ready for the next turn.
+
+Role markers such as `--- User ---` are reserved syntax at the start of a line. textllm keeps read-side support for backslash-escaped markers, but generated assistant output is written directly rather than auto-escaped.
 
 Title replacement is a separate write because it edits the first line when `!!AUTO TITLE!!` appears there. Rename is also separate and only runs when configured to do so.
 

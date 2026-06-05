@@ -13,7 +13,7 @@ authors = [
     { name = "Justin Winokur", email = "Jwink3101@users.noreply.github.com" },
 ]
 dependencies = [
-    "litellm",
+    "any-llm-sdk",
     "python-dotenv",
 ]
 classifiers = [

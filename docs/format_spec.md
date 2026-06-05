@@ -69,9 +69,9 @@ max_tokens = 2000
 
 The first fenced code block in the preamble whose info string is empty or `toml` is the settings block. Producers should use `toml` for clarity. The block must contain valid TOML.
 
-The `model` setting selects the LiteLLM model. Other settings are passed through to LiteLLM as call settings. The format does not define or validate provider-specific keys.
+The `model` setting selects the any-llm provider and model. Producers should write `provider/model`, which is the preferred textllm form. Readers also accept `provider:model` for compatibility. Other settings are passed through to any-llm as call settings. The format does not define or validate provider-specific keys.
 
-Settings are expected to be flat enough to pass directly to LiteLLM, but TOML itself may express nested data if a provider setting needs it and LiteLLM accepts the resulting value. Avoid using settings keys for textllm-owned behavior unless they are documented by textllm.
+Settings are expected to be flat enough to pass directly to any-llm, but TOML itself may express nested data if a provider setting needs it and any-llm accepts the resulting value. Avoid using settings keys for textllm-owned behavior unless they are documented by textllm.
 
 If no settings block is present, textllm uses its configured defaults.
 
@@ -105,7 +105,7 @@ Adjacent blocks with the same role are equivalent to one message with the block 
 
 Message content is Markdown text. textllm does not parse general Markdown structure for model text; it preserves the block content as text except for recognized image lines in user messages.
 
-Code fences, lists, headings, tables, links, and ordinary Markdown image syntax are valid message text. A line that would otherwise be a role marker can be escaped by prefixing it with a backslash:
+Code fences, lists, headings, tables, links, and ordinary Markdown image syntax are valid message text. Role markers are reserved syntax when they appear at the start of a line. This is unlikely to matter in normal assistant responses, but a literal role marker line can be escaped by prefixing it with a backslash:
 
 ```text
 \--- User ---
@@ -117,7 +117,7 @@ Readers should treat that as literal message text:
 --- User ---
 ```
 
-Producers should escape literal role marker lines inside message content so they are not confused with message boundaries.
+Readers should continue to support escaped role markers for compatibility and for users who need literal marker text.
 
 ## Images
 
@@ -145,7 +145,7 @@ Assistant messages are persisted as text. The current format does not define ass
 
 ## Appending Responses
 
-A normal model call expects the conversation to end with a `User` block. textllm appends the assistant response as an `Assistant` block and then writes a new empty `User` block for the next turn.
+A normal model call expects the conversation to end with a `User` block. textllm appends an `Assistant` block, writes response chunks into that block as they arrive, and then writes a new empty `User` block for the next turn.
 
 Tools may allow calls where the file does not end with a user message, but that is operational behavior rather than a different file format.
 
@@ -164,11 +164,10 @@ Producers should:
 - Use a Markdown title on the first line when a title is wanted.
 - Use a fenced `toml` block for settings.
 - Use canonical role marker capitalization.
-- Escape literal role marker lines inside messages.
 - Keep image references on their own line when they should be sent as image input.
 
 ## Extension Guidance
 
 Future extensions should keep the file readable as Markdown and avoid changing the meaning of existing role blocks. New model capabilities should prefer explicit syntax or clearly documented settings over inference from ordinary prose.
 
-When adding textllm-owned metadata, choose names that are unlikely to collide with LiteLLM provider settings and document whether they belong in TOML settings, preamble text, or message content.
+When adding textllm-owned metadata, choose names that are unlikely to collide with any-llm provider settings and document whether they belong in TOML settings, preamble text, or message content.
