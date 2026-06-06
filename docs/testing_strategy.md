@@ -31,7 +31,7 @@ These responses are intentionally simple. They are not meant to simulate model r
 
 textllm always calls the model through a streaming path. Chat responses are printed to stdout while response chunks are also written to the conversation file. Title generation also uses the streaming path, but suppresses stdout and file streaming so title chunks do not mix with the user-visible answer or conversation body.
 
-The fake stream yields deterministic text chunks so the default CLI path exercises chunk accumulation, stdout streaming, and file streaming. There is no non-streaming CLI mode.
+The fake stream yields deterministic text chunks so the default CLI path exercises chunk accumulation, stdout streaming, and file streaming. The assistant block is written lazily on the first response text chunk; tests cover both normal streaming and failures or empty streams before any text is emitted. There is no non-streaming CLI mode.
 
 ## Subprocess Tests
 

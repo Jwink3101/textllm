@@ -27,7 +27,7 @@
 - This is a single-file Python package using `setuptools` configured in `pyproject.toml`; keep `textllm.py` and `pyproject.toml` versions in sync.
 - Runtime dependencies are `python-dotenv` and `any-llm-sdk`; do not add provider-specific dependencies unless there is a concrete need.
 - The CLI reads and writes Markdown conversation files, parses optional TOML settings, supports image Markdown, and uses `iter_completion_text()` as the boundary to any-llm's streaming completion API.
-- Chat responses stream to stdout and into the assistant block in the conversation file as chunks arrive. Role markers such as `--- User ---` are reserved syntax at the start of a line; keep read-side support for backslash-escaped literal markers.
+- Chat responses stream to stdout as chunks arrive. The conversation file assistant block is created on the first response text chunk, then subsequent chunks are written into it as they arrive. Role markers such as `--- User ---` are reserved syntax at the start of a line; keep read-side support for backslash-escaped literal markers.
 - Keep edits focused and conservative; preserve the simple text-file workflow described in `readme.md`.
 - Prefer ASCII in source and docs unless the surrounding file already uses non-ASCII.
 

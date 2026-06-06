@@ -145,7 +145,7 @@ Assistant messages are persisted as text. The current format does not define ass
 
 ## Appending Responses
 
-A normal model call expects the conversation to end with a `User` block. textllm appends an `Assistant` block, writes response chunks into that block as they arrive, and then writes a new empty `User` block for the next turn.
+A normal model call expects the conversation to end with a `User` block. textllm starts an `Assistant` block when the model emits the first text chunk, writes later response chunks into that block as they arrive, and then writes a new empty `User` block for the next turn. If the model call fails before emitting text, textllm leaves the conversation body unchanged.
 
 Tools may allow calls where the file does not end with a user message, but that is operational behavior rather than a different file format.
 

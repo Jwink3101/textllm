@@ -91,7 +91,7 @@ In deterministic test mode, the same boundary yields fake stream chunks instead 
 
 ## File Update Behavior
 
-textllm appends model output rather than rewriting the whole conversation during normal chat. It writes response chunks into the assistant block as they arrive, so an interrupted command can still leave partial assistant output in the file.
+textllm appends model output rather than rewriting the whole conversation during normal chat. It starts the assistant block when the model emits the first text chunk, then writes response chunks into that block as they arrive. This avoids leaving an empty assistant block when a provider fails before producing text, while still preserving partial assistant output after streaming has started.
 
 The append format is:
 

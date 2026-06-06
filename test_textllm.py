@@ -320,7 +320,9 @@ def test_default_settings():
         env["TEXTLLM_DEFAULT_MODEL"] = "openai/gpt-4o-mini"
         env["TEXTLLM_TEMPLATE_FILE"] = "testdir/template.md"
         with open("testdir/template.md", "wt") as fp:
-            fp.write(dedent("""
+            fp.write(
+                dedent(
+                    """
                 # no title
                 ```toml
                 model = "{model}"
@@ -332,7 +334,9 @@ def test_default_settings():
                 Respond with nothing but "hello" (without quotes). DO NOT DEVIATE from this
                 --- User ---
                 
-                """))
+                """
+                )
+            )
         subprocess.call([sys.executable, "textllm.py", "testdir/new.md"], env=env)
         with open("testdir/new.md", "rt") as fp:
             template = fp.read()
@@ -370,10 +374,14 @@ def test_images():
 
     shutil.copy2("testdir/template.md", "testdir/one.md")
     with open("testdir/one.md", "at") as fp:
-        fp.write(dedent("""
+        fp.write(
+            dedent(
+                """
             ![backup](traeh.png "My Title")
             Describe this image
-            """))
+            """
+            )
+        )
 
     out, log = run_cli(["testdir/one.md"])
     assert "saw 1 images" in out.lower()
@@ -381,7 +389,9 @@ def test_images():
 
     shutil.copy2("testdir/template.md", "testdir/two.md")
     with open("testdir/two.md", "at") as fp:
-        fp.write(dedent("""
+        fp.write(
+            dedent(
+                """
             Describe this image in ONE WORD:
             ![](worra.jpg)
             
@@ -389,7 +399,9 @@ def test_images():
             ![backup](traeh.png "My Title")
             
             How many images were there?
-            """))
+            """
+            )
+        )
 
     out, log = run_cli(["testdir/two.md"])
     assert "saw 2 images" in out.lower()
@@ -404,11 +416,15 @@ def test_images():
     with open("testdir/three.md", "at") as fp, open("testdir/worra.jpg", "rb") as img:
         data = img.read()
         bdata = base64.b64encode(data).decode()
-        fp.write(dedent(f"""
+        fp.write(
+            dedent(
+                f"""
                 Describe this image. Make sure to include the color.
                 
                 ![Alt text](data:image/jpg;base64,{bdata})
-                """))
+                """
+            )
+        )
     out, log = run_cli(["testdir/three.md"])
     assert "saw 1 images" in out.lower()
     assert "Found 'data:<...>' URL" in log
@@ -420,7 +436,9 @@ def test_developer_role_and_adjacent_merge():
     clean()
     try:
         os.makedirs("testdir")
-        Path("testdir/dev.md").write_text(dedent("""
+        Path("testdir/dev.md").write_text(
+            dedent(
+                """
                 # dev role
 
                 ```toml
@@ -442,7 +460,9 @@ def test_developer_role_and_adjacent_merge():
                 --- User ---
 
                 Second message
-                """).strip())
+                """
+            ).strip()
+        )
 
         convo = textllm.Conversation("testdir/dev.md")
         assert [msg["role"] for msg in convo.messages] == [
@@ -520,7 +540,9 @@ def test_call_llm_usage_and_empty_stream(monkeypatch):
     clean()
     try:
         os.makedirs("testdir")
-        Path("testdir/call.md").write_text(dedent("""
+        Path("testdir/call.md").write_text(
+            dedent(
+                """
                 # call
 
                 ```toml
@@ -530,7 +552,9 @@ def test_call_llm_usage_and_empty_stream(monkeypatch):
                 --- User ---
 
                 hello
-                """).strip())
+                """
+            ).strip()
+        )
         convo = textllm.Conversation("testdir/call.md")
 
         def fake_stream(*, model, messages, settings):
@@ -557,7 +581,9 @@ def test_chat_streams_chunks_to_file(monkeypatch):
     try:
         os.makedirs("testdir")
         path = Path("testdir/stream.md")
-        path.write_text(dedent("""
+        path.write_text(
+            dedent(
+                """
                 # stream
 
                 ```toml
@@ -567,7 +593,9 @@ def test_chat_streams_chunks_to_file(monkeypatch):
                 --- User ---
 
                 hello
-                """).strip())
+                """
+            ).strip()
+        )
         convo = textllm.Conversation(path)
 
         def fake_stream(*, model, messages, settings):
@@ -589,6 +617,82 @@ def test_chat_streams_chunks_to_file(monkeypatch):
         assert "first second\n--- User ---" in text
         assert "\\--- User ---" not in text
         assert text.endswith("--- User ---  \n\n")
+    finally:
+        clean()
+
+
+def test_chat_does_not_write_assistant_block_before_first_chunk(monkeypatch):
+    clean()
+    try:
+        os.makedirs("testdir")
+        path = Path("testdir/error-before-stream.md")
+        path.write_text(
+            dedent(
+                """
+                # stream error
+
+                ```toml
+                model = "openai/gpt-4o-mini"
+                ```
+
+                --- User ---
+
+                hello
+                """
+            ).strip()
+        )
+        convo = textllm.Conversation(path)
+
+        def failing_stream(*, model, messages, settings):
+            raise RuntimeError("provider failed")
+            yield
+
+        monkeypatch.setattr(textllm, "iter_completion_text", failing_stream)
+
+        with pytest.raises(RuntimeError, match="provider failed"):
+            convo.chat()
+
+        text = path.read_text()
+        assert "--- Assistant ---" not in text
+        assert not text.endswith("--- User ---  \n\n")
+    finally:
+        clean()
+
+
+def test_chat_does_not_write_assistant_block_for_empty_stream(monkeypatch):
+    clean()
+    try:
+        os.makedirs("testdir")
+        path = Path("testdir/empty-stream.md")
+        path.write_text(
+            dedent(
+                """
+                # empty stream
+
+                ```toml
+                model = "openai/gpt-4o-mini"
+                ```
+
+                --- User ---
+
+                hello
+                """
+            ).strip()
+        )
+        convo = textllm.Conversation(path)
+
+        def empty_stream(*, model, messages, settings):
+            if False:
+                yield None
+
+        monkeypatch.setattr(textllm, "iter_completion_text", empty_stream)
+
+        with pytest.raises(ValueError, match="did not include text"):
+            convo.chat()
+
+        text = path.read_text()
+        assert "--- Assistant ---" not in text
+        assert not text.endswith("--- User ---  \n\n")
     finally:
         clean()
 
@@ -688,12 +792,16 @@ def test_iter_completion_text_uses_any_llm_provider_model(monkeypatch):
 def test_parser_edges_and_image_code_blocks():
     assert textllm.Conversation.read_settings("No settings here") == {}
 
-    parsed = textllm.loads(dedent(r"""
+    parsed = textllm.loads(
+        dedent(
+            r"""
             --- User ---
 
             \--- User ---
             This is literal marker text.
-            """).strip())
+            """
+        ).strip()
+    )
     assert parsed["title"] == ""
     assert parsed["conversation"] == [
         {

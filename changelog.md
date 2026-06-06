@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.1 (2026-06-06)
+
+- Do not print an Assistant block until tokens start to stream
+
 ## 0.8.0 (2026-06-05)
 
 - Replaced LiteLLM with any-llm for streamed model calls.

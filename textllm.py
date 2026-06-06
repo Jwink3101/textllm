@@ -21,7 +21,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv  # pip install python-dotenv
 
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 
 log = logging.getLogger("textllm")
 
@@ -423,13 +423,12 @@ class Conversation:
 
         with open(self.filepath, "r+") as file:
             self._seek_append_point(file)
-            file.write("\n\n--- Assistant ---  \n\n")
-            file.flush()
+            stream_writer = self._AssistantBlockWriter(file)
 
             response = self.call_llm(
                 messages=self.messages,
                 print_stream=True,
-                stream_writer=file,
+                stream_writer=stream_writer,
             )
 
             file.write("\n\n--- User ---  \n\n")
@@ -438,6 +437,24 @@ class Conversation:
         # Not really needed but in case I do more with it later
         self.messages.append({"role": "assistant", "content": response.content})
         log.info(f"Updated {self.filepath!r}")
+
+    class _AssistantBlockWriter:
+        """Write the assistant heading only when response text exists."""
+
+        def __init__(self, file):
+            self.file = file
+            self.started = False
+
+        def write(self, text):
+            if not text:
+                return
+            if not self.started:
+                self.file.write("\n\n--- Assistant ---  \n\n")
+                self.started = True
+            self.file.write(text)
+
+        def flush(self):
+            self.file.flush()
 
     @staticmethod
     def _seek_append_point(file):
