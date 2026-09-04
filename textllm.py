@@ -1303,6 +1303,7 @@ class Conversation:
                     # Need to load it relative to the file
                     img_path = os.path.join(os.path.dirname(self.filepath), img_url)
                     mime_type, _ = mimetypes.guess_type(img_path)
+                    mime_type = mime_type or "application/octet-stream"
                     with open(img_path, "rb") as fp:
                         data = fp.read()
                         img_data = base64.b64encode(data).decode("utf-8")
@@ -1472,7 +1473,8 @@ def process_msg_for_images(lines):
         `(text, image_urls)` where `text` excludes standalone Markdown image
         lines outside fenced code blocks.
     """
-    # Regex to capture markdown images
+    # Regex to capture standard Markdown image lines. A fallback below handles
+    # valid local filenames containing parentheses.
     image_regex = re.compile(
         r"""
         ^               # Start of a line
@@ -1517,10 +1519,61 @@ def process_msg_for_images(lines):
             image_urls.append(url)
         else:
             # Keep lines that are not image lines
-            final_lines.append(line)
+            target = _markdown_image_target(line)
+            if target is not None:
+                image_urls.append(target)
+            else:
+                final_lines.append(line)
 
     # Return the processed text and list of image URLs
     return "\n".join(final_lines), image_urls
+
+
+def _parenthesized_target(text, start):
+    """Return `(target, end)` for a Markdown destination beginning at *start*.
+
+    The scanner accepts spaces and balanced parentheses in local filenames. It
+    intentionally does not interpret backslash escapes: paths are used exactly
+    as written in the conversation file.
+    """
+
+    depth = 0
+    angle = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if index == start and char == "<":
+            angle = True
+        elif angle:
+            if char == ">":
+                angle = False
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            if depth:
+                depth -= 1
+            else:
+                return text[start:index].strip(), index + 1
+    return None, None
+
+
+def _markdown_target_value(target):
+    """Normalize an angle-bracket Markdown destination without rewriting paths."""
+
+    if target.startswith("<") and target.endswith(">"):
+        return target[1:-1]
+    return target
+
+
+def _markdown_image_target(line):
+    """Parse a standalone image line with a destination that may contain spaces."""
+
+    match = re.match(r"^\s*!\[[^\]]*\]\(\s*", line)
+    if not match:
+        return None
+    target, end = _parenthesized_target(line, match.end())
+    if end is None or line[end:].strip():
+        return None
+    return _markdown_target_value(target)
 
 
 def process_msg_for_attachments(lines, *, attachments=True):
@@ -1548,15 +1601,14 @@ def process_msg_for_attachments(lines, *, attachments=True):
         `(text, image_urls, attachment_targets, include_targets)`.
     """
 
-    inline = re.compile(
-        r"\[@(attach(?:ment)?|include)(?:\s+(.*?))?\]\(\s*(?:<([^>]+)>|([^\s)]+))\s*\)",
-        re.IGNORECASE,
+    inline_start = re.compile(
+        r"\[@(attach(?:ment)?|include)(?:\s+([^\]]*?))?\]\(\s*", re.IGNORECASE
     )
     reference = re.compile(
         r"\[@(attach(?:ment)?|include)(?:\s+(.*?))?\]\[([^\]]+)\]",
         re.IGNORECASE,
     )
-    definition = re.compile(r"^\s*\[([^\]]+)\]:\s*(?:<([^>]+)>|(\S+))(?:\s+.*)?$")
+    definition = re.compile(r"^\s*\[([^\]]+)\]:\s*(.+?)\s*$")
 
     references = {}
     in_code_block = False
@@ -1566,7 +1618,7 @@ def process_msg_for_attachments(lines, *, attachments=True):
             continue
         if not in_code_block and (match := definition.match(line)):
             reference_id = match.group(1).strip().casefold()
-            target = match.group(2) or match.group(3)
+            target = _markdown_target_value(match.group(2))
             references[reference_id] = (target, index)
             log.debug(
                 "Found attachment reference definition %r -> %r", reference_id, target
@@ -1587,18 +1639,27 @@ def process_msg_for_attachments(lines, *, attachments=True):
             continue
 
         if attachments:
-
-            def replace_inline(match):
-                kind, description, angle_target, bare_target = match.groups()
-                target = angle_target or bare_target
-                targets = (
-                    include_targets
-                    if kind.casefold() == "include"
-                    else attachment_targets
-                )
-                targets.append(target)
-                log.debug("Detected inline @%s target %r", kind, target)
-                return description or ""
+            def replace_inline_directives(value):
+                result = []
+                position = 0
+                while match := inline_start.search(value, position):
+                    target, end = _parenthesized_target(value, match.end())
+                    if end is None:
+                        break
+                    kind, description = match.groups()
+                    target = _markdown_target_value(target)
+                    result.append(value[position : match.start()])
+                    result.append(description or "")
+                    position = end
+                    targets = (
+                        include_targets
+                        if kind.casefold() == "include"
+                        else attachment_targets
+                    )
+                    targets.append(target)
+                    log.debug("Detected inline @%s target %r", kind, target)
+                result.append(value[position:])
+                return "".join(result)
 
             def replace_reference(match):
                 kind, description, reference_id = match.groups()
@@ -1622,7 +1683,7 @@ def process_msg_for_attachments(lines, *, attachments=True):
                 )
                 return description or ""
 
-            line = inline.sub(replace_inline, line)
+            line = replace_inline_directives(line)
             line = reference.sub(replace_reference, line)
         final_lines.append((index, line))
 

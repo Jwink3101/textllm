@@ -374,6 +374,8 @@ def test_attachments():
         os.makedirs("testdir/docs")
         Path("testdir/docs/q3-report.pdf").write_bytes(b"fake PDF")
         Path("testdir/docs/notes.txt").write_text("Included note.")
+        Path("testdir/docs/notes with spaces.txt").write_text("Spaced note.")
+        Path("testdir/docs/report (final).pdf").write_bytes(b"final PDF")
         Path("testdir/attachments.md").write_text(textllm.CONFIG.TEMPLATE + dedent("""
                 Compare this with last quarter.
 
@@ -407,6 +409,23 @@ def test_attachments():
         ]["text"]
         assert "Read notes carefully." in inline_text
         assert "--- Included file: notes.txt ---\n\nIncluded note." in inline_text
+
+        Path("testdir/spaced-inline.md").write_text(
+            "--- User ---\n\nRead [@include notes](docs/notes with spaces.txt) carefully.\n"
+        )
+        spaced_text = textllm.Conversation("testdir/spaced-inline.md").messages[0][
+            "content"
+        ][0]["text"]
+        assert "--- Included file: notes with spaces.txt ---\n\nSpaced note." in spaced_text
+
+        Path("testdir/parentheses.md").write_text(
+            "--- User ---\n\nRead [@attach final report](docs/report (final).pdf).\n"
+        )
+        parentheses_content = textllm.Conversation("testdir/parentheses.md").messages[
+            0
+        ]["content"]
+        assert parentheses_content[0]["text"] == "Read final report."
+        assert parentheses_content[1]["file"]["filename"] == "report (final).pdf"
 
         Path("testdir/missing-inline.md").write_text(
             "--- User ---\n\nRead [@include missing](docs/missing.txt).\n"
@@ -1558,6 +1577,10 @@ def test_parser_edges_and_image_code_blocks():
     assert "![not image](inside-code.png)" in msg
     assert "![real](outside.png)" not in msg
 
+    msg, images = textllm.process_msg_for_images(["![photo](image (1).png)"])
+    assert msg == ""
+    assert images == ["image (1).png"]
+
     msg, images, attachments, includes = textllm.process_msg_for_attachments(
         [
             "Compare these.",
@@ -1575,6 +1598,23 @@ def test_parser_edges_and_image_code_blocks():
     assert images == []
     assert attachments == ["docs/report.pdf"]
     assert includes == []
+    msg, images, attachments, includes = textllm.process_msg_for_attachments(
+        ["Read [@include](meeting notes (final).md) now."]
+    )
+    assert msg == "Read  now."
+    assert images == []
+    assert attachments == []
+    assert includes == ["meeting notes (final).md"]
+    msg, images, attachments, includes = textllm.process_msg_for_attachments(
+        [
+            "Read [@include][meeting-notes].",
+            "[meeting-notes]: meeting notes (final).md",
+        ]
+    )
+    assert msg == "Read ."
+    assert images == []
+    assert attachments == []
+    assert includes == ["meeting notes (final).md"]
     with pytest.raises(ValueError, match="not defined"):
         textllm.process_msg_for_attachments(["[@attachment][missing]"])
 

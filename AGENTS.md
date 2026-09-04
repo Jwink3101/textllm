@@ -31,6 +31,7 @@
 - Chat responses stream to stdout as chunks arrive. The conversation file assistant block is created on the first response text chunk, then subsequent chunks are written into it as they arrive. Role markers such as `--- User ---` are reserved syntax at the start of a line; keep read-side support for backslash-escaped literal markers.
 - Keep edits focused and conservative; preserve the simple text-file workflow described in `readme.md`.
 - Prefer ASCII in source and docs unless the surrounding file already uses non-ASCII.
+- Always assume filenames could have spaces, symbols, or any other valid character!
 
 ## Testing Notes
 

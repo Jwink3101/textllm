@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.3 (2026-09-04)
+
+- Fix AGAIN for missing attachments or includes. Now more robust to spaces in the names.
+
 ## 0.9.2 (2026-09-04)
 
 - Fix for missing attachments or includes

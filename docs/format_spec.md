@@ -171,6 +171,8 @@ User messages can attach non-image files with a Markdown link whose link text be
 
 The optional description is retained as model text. The attachment link is removed from model text and converted into a file content block. Local targets are resolved relative to the conversation file and encoded as data URLs. HTTP(S) and `data:` targets are passed through. MIME types for local files are inferred from the filename, with `application/octet-stream` as a fallback.
 
+Attachment and include targets may contain spaces and parentheses, for example `[@include](meeting notes (final).md)`.
+
 Use a normal Markdown reference link to name a file once and attach it where needed:
 
 ```markdown
