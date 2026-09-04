@@ -206,6 +206,32 @@ Role markers such as `--- User ---` and `--- Assistant ---` are reserved syntax 
 
 You can include images in the Markdown in normal format. Standalone image lines in user messages are converted into OpenAI-style multimodal input blocks.
 
+### Attachments
+
+Attach a non-image file with a standalone Markdown link whose label starts with `@attach`. The optional text is sent to the model as context; the link itself is sent as a file input:
+
+```markdown
+[@attach Q3 financial report](docs/q3-report.pdf)
+```
+
+Markdown reference links work too, which keeps a shared path in one place:
+
+```markdown
+[@attach Q3 financial report][q3-report]
+
+[q3-report]: docs/q3-report.pdf
+```
+
+Attachments are part of the user message that contains them. textllm replays the complete Markdown conversation on later calls, so it sends that file again with each later request. File capability and accepted types depend on the selected model backend.
+
+Use `@include` instead for a local UTF-8 text file that should become ordinary prompt text rather than a provider file input:
+
+```markdown
+[@include deployment configuration](config/production.yaml)
+```
+
+textllm adds included contents after a clearly labelled delimiter. This works with any model backend, but can use substantial context for large files. `@attachment` remains supported as an alias for `@attach`.
+
 ### Open Vim at Bottom
 
 If using `--edit` to edit the file before submitting, it can be useful to open at the bottom of the file. textllm will correctly handle flags in `$TEXTLLM_EDITOR` so you can do something like:

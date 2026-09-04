@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.1 (2026-09-04)
+
+- Added Markdown-native file directives: `@attach` sends a file as a provider attachment and `@include` places a local UTF-8 text file in the user prompt. Both support optional descriptions and Markdown reference links; `@attachment` remains an alias for `@attach`. Use in link text: `[@include note](path/to/note.md)`
+- Added attachment debug logging for directive detection, reference resolution, MIME detection, loading, and Responses/Messages conversion. Payload contents are not logged.
+
 ## 0.9.0 (2026-09-03)
 
 - Added an opt-in any-llm Responses backend with normalized streaming events.

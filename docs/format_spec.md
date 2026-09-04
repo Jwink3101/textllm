@@ -161,6 +161,41 @@ Image alt text and optional image titles are allowed for Markdown readability, b
 
 Markdown image syntax inside fenced code blocks remains literal text. Inline images embedded in the middle of a prose line are also treated as text, not image input.
 
+## Attachments
+
+User messages can attach non-image files with a standalone Markdown link whose link text begins with `@attach`:
+
+```markdown
+[@attach optional description](report.pdf)
+```
+
+The optional description is retained as model text. The attachment link is removed from model text and converted into a file content block. Local targets are resolved relative to the conversation file and encoded as data URLs. HTTP(S) and `data:` targets are passed through. MIME types for local files are inferred from the filename, with `application/octet-stream` as a fallback.
+
+Use a normal Markdown reference link to name a file once and attach it where needed:
+
+```markdown
+[@attach Q3 financial report][q3-report]
+
+[q3-report]: docs/q3-report.pdf
+```
+
+The matching reference definition is metadata and is not sent as model text. An undefined attachment reference is an error. `@attachment` is retained as an alias for `@attach`. Attachment links in non-user blocks, ordinary Markdown links, and syntax inside fenced code blocks remain ordinary Markdown.
+
+An attachment remains in the user message where it appears. Since textllm replays the Markdown conversation for each model call, attachments from prior user turns are sent again on later calls. The selected model backend determines whether it accepts a particular file type.
+
+### Included Files
+
+`@include` uses the same Markdown syntax but reads a local UTF-8 text file into the user message instead of creating a provider file input:
+
+```markdown
+[@include optional description](notes.md)
+[@include optional description][notes]
+
+[notes]: docs/notes.md
+```
+
+The description remains text context. textllm appends the included contents after a labelled delimiter that preserves the filename. URLs and `data:` URLs are not allowed for `@include`; non-UTF-8 files are rejected. Included text is replayed on later calls like any other message text, so keep included files reasonably sized.
+
 Assistant messages are persisted as text. Responses and Messages URL citations are appended to the assistant text as a conventional Markdown `### Sources` section. The sources are therefore ordinary assistant content on later turns. Search queries, raw search results, tool call objects, assistant-generated images, thinking signatures, and hidden reasoning data are not persisted.
 
 When `[textllm].reasoning_summary = "note"`, provider-returned reasoning-summary content is appended as a `Note` block after the assistant response. For the Messages backend, this includes text from Anthropic `thinking` blocks. It remains visible to the reader but is excluded from future model and automatic-title requests. This is distinct from hidden chain-of-thought that a provider does not return, which textllm cannot request or store.

@@ -6,7 +6,7 @@ This project tests `textllm` as a local text-file workflow, not as a live model 
 
 - Verify the CLI behavior users rely on: creating conversation files, appending prompts, always streaming output to stdout and the conversation file, reporting provider token usage to stderr or a local-only note, setting titles, renaming files, reading stdin/editor input, loading templates, and applying environment defaults.
 - Verify the Markdown conversation format: title parsing, TOML settings, role blocks, escaped role markers, adjacent role merging, local-only note filtering, and message conversion.
-- Verify image handling as transport behavior: Markdown image references are found, local files are read and converted to data URLs, embedded data URLs are preserved, and image blocks are converted for the selected model boundary.
+- Verify image, attachment, and include handling as transport behavior: Markdown image references, `@attach` links, and `@include` links are found, local files are read and converted to data URLs or UTF-8 text, reference links resolve, embedded data URLs are preserved, and media/file blocks are converted for the selected model boundary.
 - Verify Responses behavior: OpenAI and OpenRouter routing, event normalization, reasoning-summary handling, hosted web-search status, citation rendering, usage, and title-call tool isolation.
 - Verify Messages behavior: Anthropic routing, OpenRouter native-endpoint transport selection, required token limits, system/developer and image conversion, text and thinking events, hosted web-search status, citations, split usage merging, and title-call tool isolation.
 - Avoid spending money or requiring credentials in the main test suite.
@@ -16,7 +16,7 @@ This project tests `textllm` as a local text-file workflow, not as a live model 
 
 The automated suite uses deterministic test streams instead of a live provider. Tests set `TEXTLLM_TEST_MODE=1`, and in-process tests also set `textllm.TEST_MODE = True`. In that mode, `iter_completion_text()` yields deterministic completion chunks, while the Responses and Messages backends yield normalized deterministic events rather than making live any-llm calls.
 
-The fake streams sit at the same model boundaries as production. Production code still parses files, builds messages, filters local-only `Note` blocks from chat and title requests, processes images, merges adjacent same-role messages, normalizes events, writes responses and citations, and runs rename/title logic. This keeps the tests focused on `textllm` behavior while removing live provider cost, latency, nondeterminism, and account setup.
+The fake streams sit at the same model boundaries as production. Production code still parses files, builds messages, filters local-only `Note` blocks from chat and title requests, processes images and attachments, merges adjacent same-role messages, normalizes events, writes responses and citations, and runs rename/title logic. This keeps the tests focused on `textllm` behavior while removing live provider cost, latency, nondeterminism, and account setup.
 
 Backend mocks are useful for targeted tests of OpenAI-style chunk parsing, but they should not replace `TEXTLLM_TEST_MODE=1` for subprocess tests or dynamic assertions. The subprocess suite needs deterministic behavior that survives a fresh Python interpreter.
 
@@ -49,6 +49,10 @@ Do not replace these subprocess tests with only in-process calls unless the subp
 Image tests should assert image plumbing, not fake visual recognition. Good assertions include log lines showing local images were found, output showing the expected image count, and follow-up prompts proving prior image messages remain in context.
 
 Avoid assertions such as "the model says the image is blue" in the default suite. That belongs to live provider validation, not deterministic unit or CLI testing.
+
+## Attachment Tests
+
+Attachment tests should assert that inline and reference-style `@attach` links become file blocks, their optional descriptions remain text, their reference definitions are not model text, and local paths resolve relative to the conversation file. Include tests should assert that `@include` links read local UTF-8 text after a labelled delimiter and reject binary or remote sources. Test completion, Responses, and Messages conversion independently. Include a follow-up request to confirm that an attachment or include in an earlier user message remains in replayed context. Avoid live-provider assertions about document contents or model-specific file support.
 
 ## Live Provider Checks
 

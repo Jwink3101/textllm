@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 from datetime import datetime
 from functools import cached_property
@@ -21,7 +22,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv  # pip install python-dotenv
 
-__version__ = "0.9.0"
+__version__ = "0.9.1"
 
 log = logging.getLogger("textllm")
 
@@ -163,6 +164,17 @@ def _message_image_count(message):
     )
 
 
+def _message_attachment_count(message):
+    """Return the number of generic file attachment blocks in a message."""
+
+    content = message["content"]
+    if not isinstance(content, list):
+        return 0
+    return sum(
+        1 for block in content if isinstance(block, dict) and block.get("type") == "file"
+    )
+
+
 @dataclass
 class LLMResponse:
     """Normalized response returned from the model boundary."""
@@ -195,6 +207,7 @@ def _deterministic_response_content(messages):
         return "hello"
 
     image_count = sum(_message_image_count(msg) for msg in user_messages)
+    attachment_count = sum(_message_attachment_count(msg) for msg in user_messages)
     last_text = _message_text(user_messages[-1]).strip()
     words = re.findall(r"\b[\w'-]+\b", last_text)
     final_word = words[-1].strip("'\"") if words else ""
@@ -204,7 +217,12 @@ def _deterministic_response_content(messages):
 
     base = f"{response_count} user messages. " f"Last message ended with: {final_word}"
     if image_count:
-        return f"saw {image_count} images. {base}"
+        prefix = f"saw {image_count} images"
+        if attachment_count:
+            prefix += f" and {attachment_count} attachments"
+        return f"{prefix}. {base}"
+    if attachment_count:
+        return f"saw {attachment_count} attachments. {base}"
     return base
 
 
@@ -295,7 +313,7 @@ def _plain_mapping(value):
 
 
 def _responses_messages(messages):
-    """Convert chat-completion image blocks to Responses input blocks."""
+    """Convert chat-completion multimodal blocks to Responses input blocks."""
 
     result = []
     for message in messages:
@@ -313,6 +331,19 @@ def _responses_messages(messages):
                 if isinstance(image_url, dict):
                     image_url = image_url.get("url")
                 blocks.append({"type": "input_image", "image_url": image_url})
+            elif block.get("type") == "file":
+                file = block.get("file", {})
+                log.debug(
+                    "Converting attachment %r to a Responses input_file block",
+                    file.get("filename"),
+                )
+                blocks.append(
+                    {
+                        "type": "input_file",
+                        "file_data": file.get("file_data"),
+                        "filename": file.get("filename"),
+                    }
+                )
             else:
                 blocks.append(block.copy())
         result.append({"role": message["role"], "content": blocks})
@@ -346,6 +377,35 @@ def _messages_image_block(block):
         "type": "image",
         "source": {"type": "url", "url": image_url},
     }
+
+
+def _messages_attachment_block(block):
+    """Convert an OpenAI-style file block to an Anthropic document block."""
+
+    file = block.get("file", {})
+    file_data = file.get("file_data")
+    if not isinstance(file_data, str) or not file_data:
+        raise ValueError("Messages attachment input requires non-empty file data")
+
+    if file_data.startswith("data:"):
+        header, separator, data = file_data.partition(",")
+        media_type = header[5:].split(";", 1)[0]
+        if not separator or ";base64" not in header or not media_type or not data:
+            raise ValueError("Messages attachment data URL must contain base64 file data")
+        log.debug(
+            "Converting attachment %r to a Messages base64 document block (%s)",
+            file.get("filename"),
+            media_type,
+        )
+        return {
+            "type": "document",
+            "source": {"type": "base64", "media_type": media_type, "data": data},
+        }
+
+    log.debug(
+        "Converting attachment %r to a Messages URL document block", file.get("filename")
+    )
+    return {"type": "document", "source": {"type": "url", "url": file_data}}
 
 
 def _combine_system_content(first, second):
@@ -388,6 +448,8 @@ def _messages_request(messages):
                 converted.append({"type": "text", "text": block.get("text", "")})
             elif block.get("type") == "image_url":
                 converted.append(_messages_image_block(block))
+            elif block.get("type") == "file":
+                converted.append(_messages_attachment_block(block))
             else:
                 converted.append(block.copy())
         result.append({"role": role, "content": converted})
@@ -1209,9 +1271,17 @@ class Conversation:
                     line = line[1:]
                 msg_lines.append(line)
 
-            msg, img_urls = process_msg_for_images(msg_lines)
+            msg, img_urls, attachments, includes = process_msg_for_attachments(
+                msg_lines, attachments=item["role"] == "user"
+            )
+            if attachments:
+                log.debug(
+                    "Found %d attachment directive(s) in %s message",
+                    len(attachments),
+                    item["role"],
+                )
 
-            if img_urls:
+            if img_urls or attachments or includes:
                 content = [{"type": "text", "text": msg}]
             else:
                 content = msg
@@ -1237,9 +1307,62 @@ class Conversation:
                     log.debug(f"Found image {img_path!r}, {len(data)} bytes")
                 content.append(content_item)
 
+            for attachment in attachments:
+                attachment_url, filename = self._attachment_url(attachment)
+                content.append(
+                    {
+                        "type": "file",
+                        "file": {"file_data": attachment_url, "filename": filename},
+                    }
+                )
+
+            for include in includes:
+                content[0]["text"] += self._included_attachment_text(include)
+
             conversation.append({"role": FLAG2ROLE[flag.lower()], "content": content})
 
         return merge_message_runs(conversation)
+
+    def _included_attachment_text(self, attachment):
+        """Read a UTF-8 attachment for an ``@include`` Markdown directive."""
+
+        if re.match(r"(?:https?|data):", attachment, flags=re.IGNORECASE):
+            raise ValueError("Included attachments must be local UTF-8 text files")
+
+        filepath = os.path.join(os.path.dirname(self.filepath), attachment)
+        mime_type, _ = mimetypes.guess_type(filepath)
+        mime_type = mime_type or "text/plain"
+        log.debug("Including text attachment %r with MIME type %s", filepath, mime_type)
+        with open(filepath, "rb") as fp:
+            data = fp.read()
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError(f"Included attachment {attachment!r} is not UTF-8 text") from error
+
+        log.debug("Included attachment %r, %d bytes", filepath, len(data))
+        return f"\n\n--- Included file: {os.path.basename(filepath)} ---\n\n{text}"
+
+    def _attachment_url(self, attachment):
+        """Resolve an attachment target to a data or remote URL and filename."""
+
+        if re.match(r"https?://.*", attachment, flags=re.IGNORECASE) or attachment.lower().startswith(
+            "data:"
+        ):
+            path = urlsplit(attachment).path
+            filename = os.path.basename(path) or "attachment"
+            log.debug("Using attachment URL %r as %r", attachment, filename)
+            return attachment, filename
+
+        filepath = os.path.join(os.path.dirname(self.filepath), attachment)
+        mime_type, _ = mimetypes.guess_type(filepath)
+        mime_type = mime_type or "application/octet-stream"
+        log.debug("Loading attachment %r with MIME type %s", filepath, mime_type)
+        with open(filepath, "rb") as fp:
+            data = fp.read()
+        encoded = base64.b64encode(data).decode("utf-8")
+        log.debug(f"Found attachment {filepath!r}, {len(data)} bytes")
+        return f"data:{mime_type};base64,{encoded}", os.path.basename(filepath)
 
     def rename_by_title(self):
         """Rename the conversation file from its title when safe to do so."""
@@ -1391,6 +1514,105 @@ def process_msg_for_images(lines):
 
     # Return the processed text and list of image URLs
     return "\n".join(final_lines), image_urls
+
+
+def process_msg_for_attachments(lines, *, attachments=True):
+    """Separate Markdown images, ``@attach``, and ``@include`` links.
+
+    A standalone ``[@attach optional description](target)`` sends the file as a
+    provider attachment. ``[@include optional description](target)`` reads a
+    local UTF-8 text file into model text. The normal Markdown reference-link
+    spelling is supported for both. ``@attachment`` remains an alias for
+    ``@attach``. Optional descriptions remain as text while directive syntax
+    and matching reference definitions do not.
+
+    Parameters
+    ----------
+    lines : list of str
+        Message lines to inspect.
+    attachments : bool, optional
+        Whether attachment links should be processed. Attachments are user
+        inputs, so non-user role content leaves them as ordinary Markdown.
+
+    Returns
+    -------
+    tuple
+        `(text, image_urls, attachment_targets, include_targets)`.
+    """
+
+    inline = re.compile(
+        r"^\s*\[@(attach(?:ment)?|include)(?:\s+(.*?))?\]\(\s*(?:<([^>]+)>|([^\s)]+))\s*\)\s*$",
+        re.IGNORECASE,
+    )
+    reference = re.compile(
+        r"^\s*\[@(attach(?:ment)?|include)(?:\s+(.*?))?\]\[([^\]]+)\]\s*$",
+        re.IGNORECASE,
+    )
+    definition = re.compile(
+        r"^\s*\[([^\]]+)\]:\s*(?:<([^>]+)>|(\S+))(?:\s+.*)?$"
+    )
+
+    references = {}
+    in_code_block = False
+    for index, line in enumerate(lines):
+        if line.strip().startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if not in_code_block and (match := definition.match(line)):
+            reference_id = match.group(1).strip().casefold()
+            target = match.group(2) or match.group(3)
+            references[reference_id] = (target, index)
+            log.debug("Found attachment reference definition %r -> %r", reference_id, target)
+
+    attachment_targets = []
+    include_targets = []
+    definition_indexes = set()
+    final_lines = []
+    in_code_block = False
+    for index, line in enumerate(lines):
+        if line.strip().startswith("```"):
+            in_code_block = not in_code_block
+            final_lines.append((index, line))
+            continue
+        if in_code_block:
+            final_lines.append((index, line))
+            continue
+
+        match = inline.match(line) if attachments else None
+        if match:
+            kind, description, angle_target, bare_target = match.groups()
+            target = angle_target or bare_target
+            targets = include_targets if kind.casefold() == "include" else attachment_targets
+            targets.append(target)
+            log.debug("Detected inline @%s target %r", kind, target)
+            if description:
+                final_lines.append((None, description))
+            continue
+
+        match = reference.match(line) if attachments else None
+        if match:
+            kind, description, reference_id = match.groups()
+            target = references.get(reference_id.strip().casefold())
+            if target is None:
+                raise ValueError(f"Attachment reference {reference_id!r} is not defined")
+            targets = include_targets if kind.casefold() == "include" else attachment_targets
+            targets.append(target[0])
+            definition_indexes.add(target[1])
+            log.debug(
+                "Resolved @%s reference %r to target %r", kind, reference_id, target[0]
+            )
+            if description:
+                final_lines.append((None, description))
+            continue
+        final_lines.append((index, line))
+
+    if definition_indexes:
+        final_lines = [
+            (index, line) for index, line in final_lines if index not in definition_indexes
+        ]
+
+    text, image_urls = process_msg_for_images([line for _, line in final_lines])
+    return text, image_urls, attachment_targets, include_targets
 
 
 ########################################

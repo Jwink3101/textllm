@@ -367,6 +367,55 @@ def test_images():
     """
     clean()
 
+
+def test_attachments():
+    clean()
+    try:
+        os.makedirs("testdir/docs")
+        Path("testdir/docs/q3-report.pdf").write_bytes(b"fake PDF")
+        Path("testdir/docs/notes.txt").write_text("Included note.")
+        Path("testdir/attachments.md").write_text(
+            textllm.CONFIG.TEMPLATE
+            + dedent("""
+                Compare this with last quarter.
+
+                [@attachment Q3 financial report][q3-report]
+
+                [q3-report]: docs/q3-report.pdf
+
+                [@include analyst notes](docs/notes.txt)
+                """)
+        )
+
+        convo = textllm.Conversation("testdir/attachments.md")
+        messages = convo.process_conversation()
+        content = messages[-1]["content"]
+        assert content[0]["type"] == "text"
+        assert "Q3 financial report" in content[0]["text"]
+        assert "analyst notes" in content[0]["text"]
+        assert "--- Included file: notes.txt ---\n\nIncluded note." in content[0]["text"]
+        assert content[1]["type"] == "file"
+        assert content[1]["file"]["filename"] == "q3-report.pdf"
+        assert content[1]["file"]["file_data"].startswith(
+            "data:application/pdf;base64,"
+        )
+
+        out, log = run_cli(["testdir/attachments.md"])
+        assert "saw 1 attachments" in out.lower()
+        assert "Found attachment reference definition 'q3-report' -> 'docs/q3-report.pdf'" in log
+        assert "Resolved @attachment reference 'q3-report' to target 'docs/q3-report.pdf'" in log
+        assert "Loading attachment 'testdir/docs/q3-report.pdf' with MIME type application/pdf" in log
+        assert "Found attachment 'testdir/docs/q3-report.pdf', 8 bytes" in log
+        assert "Including text attachment 'testdir/docs/notes.txt' with MIME type text/plain" in log
+
+        out, _ = run_cli(
+            ["testdir/attachments.md", "--prompt", "compare it again"]
+        )
+        assert "saw 1 attachments" in out.lower()
+        assert "2 user messages" in out.lower()
+    finally:
+        clean()
+
     shutil.copytree("testresources/img", "testdir")
 
     shutil.copy2("testdir/template.md", "testdir/one.md")
@@ -587,6 +636,33 @@ def test_chunk_helpers_and_multimodal_merge():
             ],
         }
     ]
+    assert textllm._responses_messages(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "file",
+                        "file": {
+                            "file_data": "data:application/pdf;base64,cGRm",
+                            "filename": "report.pdf",
+                        },
+                    }
+                ],
+            }
+        ]
+    ) == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_file",
+                    "file_data": "data:application/pdf;base64,cGRm",
+                    "filename": "report.pdf",
+                }
+            ],
+        }
+    ]
 
 
 def test_responses_events(monkeypatch):
@@ -749,6 +825,24 @@ def test_messages_request_conversion():
         textllm._messages_image_block(
             {"type": "image_url", "image_url": {"url": "data:image/png,raw"}}
         )
+    assert textllm._messages_attachment_block(
+        {
+            "type": "file",
+            "file": {
+                "file_data": "data:application/pdf;base64,cGRm",
+                "filename": "report.pdf",
+            },
+        }
+    ) == {
+        "type": "document",
+        "source": {
+            "type": "base64",
+            "media_type": "application/pdf",
+            "data": "cGRm",
+        },
+    }
+    with pytest.raises(ValueError, match="non-empty file data"):
+        textllm._messages_attachment_block({"type": "file", "file": {}})
 
 
 def test_messages_events(monkeypatch):
@@ -1439,6 +1533,26 @@ def test_parser_edges_and_image_code_blocks():
     assert images == ["outside.png"]
     assert "![not image](inside-code.png)" in msg
     assert "![real](outside.png)" not in msg
+
+    msg, images, attachments, includes = textllm.process_msg_for_attachments(
+        [
+            "Compare these.",
+            "[@attachment report][quarterly]",
+            "[quarterly]: docs/report.pdf",
+            "```md",
+            "[@attachment literal](not-an-attachment.pdf)",
+            "```",
+        ]
+    )
+    assert msg == (
+        "Compare these.\nreport\n```md\n"
+        "[@attachment literal](not-an-attachment.pdf)\n```"
+    )
+    assert images == []
+    assert attachments == ["docs/report.pdf"]
+    assert includes == []
+    with pytest.raises(ValueError, match="not defined"):
+        textllm.process_msg_for_attachments(["[@attachment][missing]"])
 
 
 def test_stdin_prompt_joining_and_empty_prompt_file_edit():
