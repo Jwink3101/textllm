@@ -171,7 +171,9 @@ def _message_attachment_count(message):
     if not isinstance(content, list):
         return 0
     return sum(
-        1 for block in content if isinstance(block, dict) and block.get("type") == "file"
+        1
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "file"
     )
 
 
@@ -391,7 +393,9 @@ def _messages_attachment_block(block):
         header, separator, data = file_data.partition(",")
         media_type = header[5:].split(";", 1)[0]
         if not separator or ";base64" not in header or not media_type or not data:
-            raise ValueError("Messages attachment data URL must contain base64 file data")
+            raise ValueError(
+                "Messages attachment data URL must contain base64 file data"
+            )
         log.debug(
             "Converting attachment %r to a Messages base64 document block (%s)",
             file.get("filename"),
@@ -403,7 +407,8 @@ def _messages_attachment_block(block):
         }
 
     log.debug(
-        "Converting attachment %r to a Messages URL document block", file.get("filename")
+        "Converting attachment %r to a Messages URL document block",
+        file.get("filename"),
     )
     return {"type": "document", "source": {"type": "url", "url": file_data}}
 
@@ -1338,7 +1343,9 @@ class Conversation:
         try:
             text = data.decode("utf-8")
         except UnicodeDecodeError as error:
-            raise ValueError(f"Included attachment {attachment!r} is not UTF-8 text") from error
+            raise ValueError(
+                f"Included attachment {attachment!r} is not UTF-8 text"
+            ) from error
 
         log.debug("Included attachment %r, %d bytes", filepath, len(data))
         return f"\n\n--- Included file: {os.path.basename(filepath)} ---\n\n{text}"
@@ -1346,9 +1353,9 @@ class Conversation:
     def _attachment_url(self, attachment):
         """Resolve an attachment target to a data or remote URL and filename."""
 
-        if re.match(r"https?://.*", attachment, flags=re.IGNORECASE) or attachment.lower().startswith(
-            "data:"
-        ):
+        if re.match(
+            r"https?://.*", attachment, flags=re.IGNORECASE
+        ) or attachment.lower().startswith("data:"):
             path = urlsplit(attachment).path
             filename = os.path.basename(path) or "attachment"
             log.debug("Using attachment URL %r as %r", attachment, filename)
@@ -1519,12 +1526,13 @@ def process_msg_for_images(lines):
 def process_msg_for_attachments(lines, *, attachments=True):
     """Separate Markdown images, ``@attach``, and ``@include`` links.
 
-    A standalone ``[@attach optional description](target)`` sends the file as a
-    provider attachment. ``[@include optional description](target)`` reads a
-    local UTF-8 text file into model text. The normal Markdown reference-link
+    ``[@attach optional description](target)`` sends the file as a provider
+    attachment. ``[@include optional description](target)`` reads a local
+    UTF-8 text file into model text. The normal Markdown reference-link
     spelling is supported for both. ``@attachment`` remains an alias for
-    ``@attach``. Optional descriptions remain as text while directive syntax
-    and matching reference definitions do not.
+    ``@attach``. Directives can appear in prose outside fenced code blocks.
+    Optional descriptions remain as text while directive syntax and matching
+    reference definitions do not.
 
     Parameters
     ----------
@@ -1541,16 +1549,14 @@ def process_msg_for_attachments(lines, *, attachments=True):
     """
 
     inline = re.compile(
-        r"^\s*\[@(attach(?:ment)?|include)(?:\s+(.*?))?\]\(\s*(?:<([^>]+)>|([^\s)]+))\s*\)\s*$",
+        r"\[@(attach(?:ment)?|include)(?:\s+(.*?))?\]\(\s*(?:<([^>]+)>|([^\s)]+))\s*\)",
         re.IGNORECASE,
     )
     reference = re.compile(
-        r"^\s*\[@(attach(?:ment)?|include)(?:\s+(.*?))?\]\[([^\]]+)\]\s*$",
+        r"\[@(attach(?:ment)?|include)(?:\s+(.*?))?\]\[([^\]]+)\]",
         re.IGNORECASE,
     )
-    definition = re.compile(
-        r"^\s*\[([^\]]+)\]:\s*(?:<([^>]+)>|(\S+))(?:\s+.*)?$"
-    )
+    definition = re.compile(r"^\s*\[([^\]]+)\]:\s*(?:<([^>]+)>|(\S+))(?:\s+.*)?$")
 
     references = {}
     in_code_block = False
@@ -1562,7 +1568,9 @@ def process_msg_for_attachments(lines, *, attachments=True):
             reference_id = match.group(1).strip().casefold()
             target = match.group(2) or match.group(3)
             references[reference_id] = (target, index)
-            log.debug("Found attachment reference definition %r -> %r", reference_id, target)
+            log.debug(
+                "Found attachment reference definition %r -> %r", reference_id, target
+            )
 
     attachment_targets = []
     include_targets = []
@@ -1578,37 +1586,51 @@ def process_msg_for_attachments(lines, *, attachments=True):
             final_lines.append((index, line))
             continue
 
-        match = inline.match(line) if attachments else None
-        if match:
-            kind, description, angle_target, bare_target = match.groups()
-            target = angle_target or bare_target
-            targets = include_targets if kind.casefold() == "include" else attachment_targets
-            targets.append(target)
-            log.debug("Detected inline @%s target %r", kind, target)
-            if description:
-                final_lines.append((None, description))
-            continue
+        if attachments:
 
-        match = reference.match(line) if attachments else None
-        if match:
-            kind, description, reference_id = match.groups()
-            target = references.get(reference_id.strip().casefold())
-            if target is None:
-                raise ValueError(f"Attachment reference {reference_id!r} is not defined")
-            targets = include_targets if kind.casefold() == "include" else attachment_targets
-            targets.append(target[0])
-            definition_indexes.add(target[1])
-            log.debug(
-                "Resolved @%s reference %r to target %r", kind, reference_id, target[0]
-            )
-            if description:
-                final_lines.append((None, description))
-            continue
+            def replace_inline(match):
+                kind, description, angle_target, bare_target = match.groups()
+                target = angle_target or bare_target
+                targets = (
+                    include_targets
+                    if kind.casefold() == "include"
+                    else attachment_targets
+                )
+                targets.append(target)
+                log.debug("Detected inline @%s target %r", kind, target)
+                return description or ""
+
+            def replace_reference(match):
+                kind, description, reference_id = match.groups()
+                target = references.get(reference_id.strip().casefold())
+                if target is None:
+                    raise ValueError(
+                        f"Attachment reference {reference_id!r} is not defined"
+                    )
+                targets = (
+                    include_targets
+                    if kind.casefold() == "include"
+                    else attachment_targets
+                )
+                targets.append(target[0])
+                definition_indexes.add(target[1])
+                log.debug(
+                    "Resolved @%s reference %r to target %r",
+                    kind,
+                    reference_id,
+                    target[0],
+                )
+                return description or ""
+
+            line = inline.sub(replace_inline, line)
+            line = reference.sub(replace_reference, line)
         final_lines.append((index, line))
 
     if definition_indexes:
         final_lines = [
-            (index, line) for index, line in final_lines if index not in definition_indexes
+            (index, line)
+            for index, line in final_lines
+            if index not in definition_indexes
         ]
 
     text, image_urls = process_msg_for_images([line for _, line in final_lines])

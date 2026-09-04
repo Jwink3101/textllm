@@ -208,7 +208,7 @@ You can include images in the Markdown in normal format. Standalone image lines 
 
 ### Attachments
 
-Attach a non-image file with a standalone Markdown link whose label starts with `@attach`. The optional text is sent to the model as context; the link itself is sent as a file input:
+Attach a non-image file with a Markdown link whose label starts with `@attach`. The optional text is sent to the model as context; the link itself is sent as a file input. The directive can appear inline in prose or on its own line:
 
 ```markdown
 [@attach Q3 financial report](docs/q3-report.pdf)

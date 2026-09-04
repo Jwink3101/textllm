@@ -163,7 +163,7 @@ Markdown image syntax inside fenced code blocks remains literal text. Inline ima
 
 ## Attachments
 
-User messages can attach non-image files with a standalone Markdown link whose link text begins with `@attach`:
+User messages can attach non-image files with a Markdown link whose link text begins with `@attach`. The directive can appear inline in prose or on its own line:
 
 ```markdown
 [@attach optional description](report.pdf)
@@ -179,7 +179,7 @@ Use a normal Markdown reference link to name a file once and attach it where nee
 [q3-report]: docs/q3-report.pdf
 ```
 
-The matching reference definition is metadata and is not sent as model text. An undefined attachment reference is an error. `@attachment` is retained as an alias for `@attach`. Attachment links in non-user blocks, ordinary Markdown links, and syntax inside fenced code blocks remain ordinary Markdown.
+The matching reference definition is metadata and is not sent as model text. An undefined attachment reference is an error. If a recognized attachment or include cannot be loaded, the model call fails before it is sent. `@attachment` is retained as an alias for `@attach`. Attachment links in non-user blocks and syntax inside fenced code blocks remain ordinary Markdown.
 
 An attachment remains in the user message where it appears. Since textllm replays the Markdown conversation for each model call, attachments from prior user turns are sent again on later calls. The selected model backend determines whether it accepts a particular file type.
 

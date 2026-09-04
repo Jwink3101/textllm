@@ -374,9 +374,7 @@ def test_attachments():
         os.makedirs("testdir/docs")
         Path("testdir/docs/q3-report.pdf").write_bytes(b"fake PDF")
         Path("testdir/docs/notes.txt").write_text("Included note.")
-        Path("testdir/attachments.md").write_text(
-            textllm.CONFIG.TEMPLATE
-            + dedent("""
+        Path("testdir/attachments.md").write_text(textllm.CONFIG.TEMPLATE + dedent("""
                 Compare this with last quarter.
 
                 [@attachment Q3 financial report][q3-report]
@@ -384,8 +382,7 @@ def test_attachments():
                 [q3-report]: docs/q3-report.pdf
 
                 [@include analyst notes](docs/notes.txt)
-                """)
-        )
+                """))
 
         convo = textllm.Conversation("testdir/attachments.md")
         messages = convo.process_conversation()
@@ -393,24 +390,51 @@ def test_attachments():
         assert content[0]["type"] == "text"
         assert "Q3 financial report" in content[0]["text"]
         assert "analyst notes" in content[0]["text"]
-        assert "--- Included file: notes.txt ---\n\nIncluded note." in content[0]["text"]
+        assert (
+            "--- Included file: notes.txt ---\n\nIncluded note." in content[0]["text"]
+        )
         assert content[1]["type"] == "file"
         assert content[1]["file"]["filename"] == "q3-report.pdf"
         assert content[1]["file"]["file_data"].startswith(
             "data:application/pdf;base64,"
         )
 
+        Path("testdir/inline.md").write_text(
+            "--- User ---\n\nRead [@include notes](docs/notes.txt) carefully.\n"
+        )
+        inline_text = textllm.Conversation("testdir/inline.md").messages[0]["content"][
+            0
+        ]["text"]
+        assert "Read notes carefully." in inline_text
+        assert "--- Included file: notes.txt ---\n\nIncluded note." in inline_text
+
+        Path("testdir/missing-inline.md").write_text(
+            "--- User ---\n\nRead [@include missing](docs/missing.txt).\n"
+        )
+        with pytest.raises(FileNotFoundError):
+            textllm.Conversation("testdir/missing-inline.md")
+
         out, log = run_cli(["testdir/attachments.md"])
         assert "saw 1 attachments" in out.lower()
-        assert "Found attachment reference definition 'q3-report' -> 'docs/q3-report.pdf'" in log
-        assert "Resolved @attachment reference 'q3-report' to target 'docs/q3-report.pdf'" in log
-        assert "Loading attachment 'testdir/docs/q3-report.pdf' with MIME type application/pdf" in log
-        assert "Found attachment 'testdir/docs/q3-report.pdf', 8 bytes" in log
-        assert "Including text attachment 'testdir/docs/notes.txt' with MIME type text/plain" in log
-
-        out, _ = run_cli(
-            ["testdir/attachments.md", "--prompt", "compare it again"]
+        assert (
+            "Found attachment reference definition 'q3-report' -> 'docs/q3-report.pdf'"
+            in log
         )
+        assert (
+            "Resolved @attachment reference 'q3-report' to target 'docs/q3-report.pdf'"
+            in log
+        )
+        assert (
+            "Loading attachment 'testdir/docs/q3-report.pdf' with MIME type application/pdf"
+            in log
+        )
+        assert "Found attachment 'testdir/docs/q3-report.pdf', 8 bytes" in log
+        assert (
+            "Including text attachment 'testdir/docs/notes.txt' with MIME type text/plain"
+            in log
+        )
+
+        out, _ = run_cli(["testdir/attachments.md", "--prompt", "compare it again"])
         assert "saw 1 attachments" in out.lower()
         assert "2 user messages" in out.lower()
     finally:
