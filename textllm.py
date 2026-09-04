@@ -22,7 +22,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv  # pip install python-dotenv
 
-__version__ = "0.9.1"
+__version__ = "0.9.2"
 
 log = logging.getLogger("textllm")
 
