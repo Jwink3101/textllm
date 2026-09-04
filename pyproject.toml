@@ -13,7 +13,7 @@ authors = [
     { name = "Justin Winokur", email = "Jwink3101@users.noreply.github.com" },
 ]
 dependencies = [
-    "any-llm-sdk",
+    "any-llm-sdk>=1.27.0",
     "python-dotenv",
 ]
 classifiers = [
@@ -34,5 +34,9 @@ py-modules = ["textllm"]
 [tool.setuptools.dynamic]
 version = { attr = "textllm.__version__" }
 
+[tool.black]
+target-version = ["py313"]
+
 [tool.isort]
 profile = "black"
+py_version = 313

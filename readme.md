@@ -70,9 +70,9 @@ Most behavior is governed by command-line flags but there are a few exceptions.
 | `$TEXTLLM_EDITOR` | Set the editor for the `--edit` flag. Will fall back to `$EDITOR` and then `vi`. |
 | `$TEXTLLM_DEFAULT_MODEL` | Sets the default model if one is not specified and writes it into templates for new chats. |
 | `$TEXTLLM_DEFAULT_TEMPERATURE` | Sets the default temperature if one is not specified and writes it into templates for new chats. |
-| `$TEXTLLM_TEMPLATE_FILE` | Sets a file to read for the template. This is used for new chats but not for defaults. |
+| `$TEXTLLM_TEMPLATE_FILE` | Sets a file to read for the template. This is used for new chats but not for defaults, and is overridden by `--template`. |
 
-These can be set before calling textllm or via an environment file, either `.env` or with the `--env` flag. The file can also be specified with `$TEXTLLM_ENV_PATH` except for itself of course.
+These can be set before calling textllm or via an environment file, either `.env` or with the `--env` flag. The file can also be specified with `$TEXTLLM_ENV_PATH` except for itself of course. Template selection goes from `--template`, then `$TEXTLLM_TEMPLATE_FILE` from the current environment or loaded environment files, then the built-in default.
 
 For custom templates that should follow environment defaults for different models, either omit `model` and `temperature` from the template settings or use placeholders such as `{model}` and `{temperature}`. See [Template Defaults and Environment Variables](docs/template_defaults.md) for examples.
 
@@ -88,7 +88,7 @@ These can be specified outside of textllm, but you can also store them in a file
 
 ## Models and Settings
 
-Any model understood by any-llm's completion API can be used. Prefer `provider/model` in textllm files. textllm also accepts `provider:model` for compatibility with any-llm examples and older LangChain-era files, and passes the provider and remaining model id to any-llm.
+Any model understood by the selected any-llm API can be used. The default backend is the completion API. Set `[textllm].backend = "responses"` for providers and models that implement any-llm's Responses API, or `"messages"` for any-llm's Anthropic-style Messages API. Anthropic uses Messages natively. OpenRouter model names use OpenRouter's native Anthropic-compatible Messages endpoint. Remaining providers may use any-llm's compatibility bridge. Prefer `provider/model` in textllm files. textllm also accepts `provider:model` for compatibility with any-llm examples and older LangChain-era files, and passes the provider and remaining model id to any-llm.
 
 ```toml
 model = "openai/gpt-5.5"
@@ -100,7 +100,59 @@ model = "ollama/llama3.1"
 model = "openrouter/openai/gpt-4o-mini"
 ```
 
-All TOML settings except `model` are passed through to any-llm. Unsupported settings will fail at the any-llm or provider layer.
+All TOML settings except `model` and the reserved `[textllm]` table are passed through to any-llm. Unsupported settings will fail at the any-llm or provider layer. Reasoning controls, OpenAI and OpenRouter Responses examples, native Anthropic Messages examples, reasoning summaries, and built-in web search are documented in [Reasoning Models and Tools](docs/reasoning_and_tools.md).
+
+For example, an OpenAI reasoning call with hosted web search can use:
+
+```toml
+model = "openai/gpt-5.5"
+reasoning = { effort = "high", summary = "auto" }
+tools = [{ type = "web_search" }]
+max_tool_calls = 5
+
+[textllm]
+backend = "responses"
+reasoning_summary = "note"
+```
+
+The answer streams normally. URL citations are appended as a Markdown `Sources` section. With `reasoning_summary = "note"`, a provider-supplied reasoning summary is written in a local-only `--- Note ---` block. Raw hidden reasoning is not stored.
+
+Use `--tokens {none,stderr,note}` to report every usage field returned by the provider for the latest conversational model call. Counts are not accumulated across earlier calls, and automatic-title usage is excluded. `stderr` prints the report separately from the streamed answer, while `note` appends it in a local-only `--- Note ---` block. The default is `none`. For persistent behavior, set the same value in the reserved table:
+
+```toml
+[textllm]
+tokens = "note"
+```
+
+The command-line flag overrides the file setting. Field names are kept as returned by each backend, including nested cached-token, reasoning-token, and provider-specific usage details when available. Because each call sends the current conversation as context, its provider-reported input count normally includes that context. The completion backend requests streamed usage when reporting is enabled; a provider may still omit some or all usage fields. See [Prompt Caching](docs/prompt_caching.md) for OpenAI, Anthropic, and OpenRouter configuration examples and instructions for checking cache hits.
+
+For a native Anthropic Messages reasoning call:
+
+```toml
+model = "anthropic/claude-sonnet-4-6"
+max_tokens = 16000
+thinking = { type = "adaptive" }
+output_config = { effort = "medium" }
+
+[textllm]
+backend = "messages"
+reasoning_summary = "note"
+```
+
+The Messages backend requires `max_tokens`. It converts `System` and `Developer` blocks to the separate Messages system prompt and converts Markdown image inputs to Anthropic image blocks.
+
+The same Messages shape can be sent through OpenRouter by changing only the model provider prefix and setting `$OPENROUTER_API_KEY`:
+
+```toml
+model = "openrouter/anthropic/claude-sonnet-4.6"
+max_tokens = 16000
+thinking = { type = "adaptive" }
+output_config = { effort = "medium" }
+
+[textllm]
+backend = "messages"
+reasoning_summary = "note"
+```
 
 ## Format Description
 
@@ -118,13 +170,13 @@ Generally, this is only set once, but if `!!AUTO TITLE!!` is added back to the f
 
 ### (2) Settings
 
-Specify settings in [TOML][toml] format inside a Markdown fenced code block. All settings are directly passed to any-llm, except for `model`, which textllm uses to select the provider and model. The template settings are the default and conversation settings update them.
+Specify settings in [TOML][toml] format inside a Markdown fenced code block. Settings are passed to any-llm except for `model`, which selects the provider and model, and the reserved `[textllm]` table, which controls textllm behavior. The template settings are the default and conversation settings update them.
 
 Note that providers require API keys. Keys can be passed through settings when any-llm supports that, but environment variables or an environment file are usually better.
 
 ### (3) Conversation
 
-The conversation is written with simple Markdown role blocks. `System`, `Developer`, `User`, and `Assistant` are supported and are sent as OpenAI-style roles.
+The conversation is written with simple Markdown role blocks. `System`, `Developer`, `User`, and `Assistant` are supported and are sent as OpenAI-style roles. `Note` blocks are local annotations that remain in the Markdown file and are never sent to the model, including during automatic title generation.
 
 ```text
 --- System ---
@@ -138,6 +190,10 @@ The last "User" block is usually the question.
 --- Assistant ---
 
 The response.
+
+--- Note ---
+
+A private reminder for the human reader. This is not sent to the model.
 ```
 
 Generally, you want the final block to be the new `User` question, but it does not have to be if `--no-require-user-prompt` is used. A new `--- User ---` heading will be added after the last response.
@@ -164,6 +220,8 @@ If using `--edit` to edit the file before submitting, it can be useful to open a
 - [Design](docs/design.md)
 - [Roadmap](docs/roadmap.md)
 - [Testing strategy](docs/testing_strategy.md)
+- [Reasoning models and tools](docs/reasoning_and_tools.md)
+- [Prompt caching](docs/prompt_caching.md)
 - [Manual tests](docs/manual_tests.md)
 
 [dotenv]: https://github.com/theskumar/python-dotenv

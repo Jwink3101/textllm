@@ -2,20 +2,22 @@
 
 This file captures known directions that are intentionally out of scope for the provider-backend migration.
 
-## Responses-Style Backend
+## Typed Streaming Backends
 
-textllm currently calls any-llm through a streaming chat-completion wrapper. The wrapper is intentionally small so a future Responses-style backend can be added without changing the file parser or CLI flow first.
+textllm now supports explicit Responses and Messages backends through any-llm. Their typed streams are normalized alongside the original completion stream without changing the role-block parser or ordinary CLI flow. Anthropic uses its native Messages API, OpenRouter-prefixed calls use OpenRouter's Anthropic-compatible Messages endpoint, and any-llm can bridge the same interface to other providers.
 
-A future backend may be useful for provider features that do not fit cleanly into chat completions, including richer reasoning controls and generated non-text outputs.
+The current typed-stream scope includes provider-returned reasoning content, provider-hosted web-search status, URL citations, usage, and streamed answer text. Future work may cover generated non-text outputs or additional hosted tools where they have a clear Markdown representation.
 
 ## Reasoning and Provider Settings
 
-Conversation TOML is flat and passes settings through to any-llm. This should allow many provider settings, including future reasoning-related settings, without textllm maintaining its own allowlist.
+Conversation TOML passes provider settings through to any-llm. The reserved `[textllm]` table holds local behavior without creating a provider-setting allowlist.
 
-Future versions may add textllm-owned settings for title generation, such as a separate title model, lower-cost title defaults, or title-specific reasoning controls. Those settings should be designed carefully so they do not collide with any-llm pass-through keys.
+The `[textllm.title]` table provides title-specific provider overrides. Future versions may add a separate title model or documented lower-cost defaults if those features justify additional local configuration.
 
 ## Richer Outputs
 
-Assistant responses are currently persisted as text only. If model output later includes images, tool calls, citations, structured data, or reasoning summaries, textllm will need a Markdown representation that stays readable while preserving useful metadata.
+Assistant responses remain readable text. URL citations use a Markdown `Sources` section, and optional provider-returned reasoning content uses local-only `Note` blocks. Search traces, thinking signatures, and raw tool objects are intentionally not persisted.
 
 Image output or image generation may require a Responses-style backend or provider-specific any-llm support. That should be designed as an explicit extension to the conversation format rather than inferred from the current text-only assistant block.
+
+Client-executed function tools would require an approval model, execution loop, tool-result representation, and interruption recovery. They remain out of scope until that workflow can preserve textllm's simple and safe file interface.

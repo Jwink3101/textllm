@@ -4,17 +4,19 @@ This project tests `textllm` as a local text-file workflow, not as a live model 
 
 ## Goals
 
-- Verify the CLI behavior users rely on: creating conversation files, appending prompts, always streaming output to stdout and the conversation file, setting titles, renaming files, reading stdin/editor input, loading templates, and applying environment defaults.
-- Verify the Markdown conversation format: title parsing, TOML settings, role blocks, escaped role markers, adjacent role merging, and message conversion.
-- Verify image handling as transport behavior: Markdown image references are found, local files are read and converted to data URLs, embedded data URLs are preserved, and image blocks are passed to the model boundary.
+- Verify the CLI behavior users rely on: creating conversation files, appending prompts, always streaming output to stdout and the conversation file, reporting provider token usage to stderr or a local-only note, setting titles, renaming files, reading stdin/editor input, loading templates, and applying environment defaults.
+- Verify the Markdown conversation format: title parsing, TOML settings, role blocks, escaped role markers, adjacent role merging, local-only note filtering, and message conversion.
+- Verify image handling as transport behavior: Markdown image references are found, local files are read and converted to data URLs, embedded data URLs are preserved, and image blocks are converted for the selected model boundary.
+- Verify Responses behavior: OpenAI and OpenRouter routing, event normalization, reasoning-summary handling, hosted web-search status, citation rendering, usage, and title-call tool isolation.
+- Verify Messages behavior: Anthropic routing, OpenRouter native-endpoint transport selection, required token limits, system/developer and image conversion, text and thinking events, hosted web-search status, citations, split usage merging, and title-call tool isolation.
 - Avoid spending money or requiring credentials in the main test suite.
 - Keep tests stable enough to run in subprocesses, in fresh environments, and during normal development.
 
 ## Method
 
-The automated suite uses a deterministic test stream instead of a live provider. Tests set `TEXTLLM_TEST_MODE=1`, and in-process tests also set `textllm.TEST_MODE = True`. In that mode, `iter_completion_text()` yields private deterministic chunks rather than importing and calling any-llm.
+The automated suite uses deterministic test streams instead of a live provider. Tests set `TEXTLLM_TEST_MODE=1`, and in-process tests also set `textllm.TEST_MODE = True`. In that mode, `iter_completion_text()` yields deterministic completion chunks, while the Responses and Messages backends yield normalized deterministic events rather than making live any-llm calls.
 
-The fake stream sits at the model boundary. Production code still parses files, builds OpenAI-style message dictionaries, processes images, merges adjacent same-role messages, collects streamed chunks, writes responses, and runs rename/title logic. This keeps the tests focused on `textllm` behavior while removing live provider cost, latency, nondeterminism, and account setup.
+The fake streams sit at the same model boundaries as production. Production code still parses files, builds messages, filters local-only `Note` blocks from chat and title requests, processes images, merges adjacent same-role messages, normalizes events, writes responses and citations, and runs rename/title logic. This keeps the tests focused on `textllm` behavior while removing live provider cost, latency, nondeterminism, and account setup.
 
 Backend mocks are useful for targeted tests of OpenAI-style chunk parsing, but they should not replace `TEXTLLM_TEST_MODE=1` for subprocess tests or dynamic assertions. The subprocess suite needs deterministic behavior that survives a fresh Python interpreter.
 
@@ -24,6 +26,9 @@ The fake returns small deterministic responses derived from the actual messages 
 - Template override tests can request the fixed response `hello` through their system prompt.
 - Normal chat responses report the number of user messages and the last word of the latest user text.
 - Image responses report how many image blocks reached the fake model.
+- Responses calls with requested reasoning summaries emit a fixed summary.
+- Messages calls with adaptive or enabled thinking emit the same fixed summary through the normalized reasoning event.
+- Responses calls with OpenAI or OpenRouter web search and Messages calls with an Anthropic web-search tool emit deterministic search lifecycle events and an `example.com` citation.
 
 These responses are intentionally simple. They are not meant to simulate model reasoning or image understanding. They are assertions that the right information reached the model boundary.
 
@@ -31,7 +36,7 @@ These responses are intentionally simple. They are not meant to simulate model r
 
 textllm always calls the model through a streaming path. Chat responses are printed to stdout while response chunks are also written to the conversation file. Title generation also uses the streaming path, but suppresses stdout and file streaming so title chunks do not mix with the user-visible answer or conversation body.
 
-The fake stream yields deterministic text chunks so the default CLI path exercises chunk accumulation, stdout streaming, and file streaming. The assistant block is written lazily on the first response text chunk; tests cover both normal streaming and failures or empty streams before any text is emitted. There is no non-streaming CLI mode.
+The fake streams yield deterministic answer chunks so all three backends exercise chunk accumulation, stdout streaming, and file streaming. Responses and Messages tests additionally exercise non-answer event handling and source-list finalization. Targeted backend mocks verify provider usage fields, nested usage merging, completion requests for streamed usage, and token reports sent to stderr or local-only notes. The assistant block is written lazily on the first answer text chunk; tests cover both normal streaming and failures or empty streams before any text is emitted. There is no non-streaming CLI mode.
 
 ## Subprocess Tests
 
@@ -51,4 +56,4 @@ Live model calls are not part of the default automated suite. If provider integr
 
 ## Maintenance Rules
 
-When changing `Conversation.call_llm()`, `iter_completion_text()`, message construction, streaming, title generation, image handling, or CLI subprocess behavior, update this document if the test strategy changes. When changing this document, also check `../AGENTS.md` so future agents receive the same guidance.
+When changing `Conversation.call_llm()`, `iter_model_events()`, any backend adapter, message construction, streaming, title generation, image handling, or CLI subprocess behavior, update this document if the test strategy changes. When changing this document, also check `../AGENTS.md` so future agents receive the same guidance.

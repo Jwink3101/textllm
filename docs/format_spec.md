@@ -43,6 +43,10 @@ User message.
 --- Assistant ---
 
 Assistant response.
+
+--- Note ---
+
+A local note that is not sent to the model.
 ````
 
 The conversation begins at the first recognized role marker. Everything before that marker is preamble.
@@ -69,7 +73,19 @@ max_tokens = 2000
 
 The first fenced code block in the preamble whose info string is empty or `toml` is the settings block. Producers should use `toml` for clarity. The block must contain valid TOML.
 
-The `model` setting selects the any-llm provider and model. Producers should write `provider/model`, which is the preferred textllm form. Readers also accept `provider:model` for compatibility. Other settings are passed through to any-llm as call settings. The format does not define or validate provider-specific keys.
+The `model` setting selects the any-llm provider and model. Producers should write `provider/model`, which is the preferred textllm form. Readers also accept `provider:model` for compatibility. Other settings are passed through to any-llm as call settings except for the reserved `[textllm]` table.
+
+The `[textllm]` table defines local behavior. Supported keys are:
+
+- `backend`: `completion`, the default, `responses`, or `messages`.
+- `reasoning_summary`: `omit`, the default, `note`, or `stderr`.
+- `title`: a nested table of provider settings that override normal settings during automatic-title generation. Tools are removed from title calls even if specified here.
+
+The format does not validate provider settings or guarantee that a provider implements the selected backend or feature.
+
+The `messages` backend calls any-llm's Anthropic-style Messages interface. It requires a `max_tokens` setting. Before the call, textllm joins `System` and `Developer` role content into the separate Messages `system` parameter, retains `User` and `Assistant` entries in the message list, and converts image inputs to Anthropic base64 or URL image-source blocks. If a top-level TOML `system` value is present, it is placed before system-role content from the conversation. Native-only Messages settings require a provider endpoint that implements the Anthropic Messages API rather than any-llm's compatibility bridge.
+
+For a model beginning with `openrouter/`, the Messages backend uses any-llm's Anthropic transport with OpenRouter's Anthropic-compatible base URL. `$OPENROUTER_API_KEY` supplies authentication unless an explicit `api_key` setting is present. An explicit `api_base` setting overrides the default `https://openrouter.ai/api`. The remaining model id, including its author namespace, is preserved.
 
 Settings are expected to be flat enough to pass directly to any-llm, but TOML itself may express nested data if a provider setting needs it and any-llm accepts the resulting value. Avoid using settings keys for textllm-owned behavior unless they are documented by textllm.
 
@@ -84,6 +100,7 @@ Conversation messages are written as role blocks. A role marker is a line contai
 --- Developer ---
 --- User ---
 --- Assistant ---
+--- Note ---
 ```
 
 Markers are case-insensitive when read. Producers should write the canonical capitalization above.
@@ -98,6 +115,9 @@ The supported roles map to model roles as follows:
 | `--- Developer ---` | `developer` |
 | `--- User ---` | `user` |
 | `--- Assistant ---` | `assistant` |
+| `--- Note ---` | Not sent; local-only content |
+
+`Note` blocks are retained in the parsed file representation but omitted from every model request. This includes normal chat calls and the conversation content used for automatic title generation. Notes may appear between any role blocks, and a trailing note does not change which model message is considered last.
 
 Adjacent blocks with the same role are equivalent to one message with the block contents joined by a blank line. Producers should usually emit one block per role turn, but readers should tolerate adjacent same-role blocks.
 
@@ -141,7 +161,9 @@ Image alt text and optional image titles are allowed for Markdown readability, b
 
 Markdown image syntax inside fenced code blocks remains literal text. Inline images embedded in the middle of a prose line are also treated as text, not image input.
 
-Assistant messages are persisted as text. The current format does not define assistant-generated image output, tool calls, citations, or hidden reasoning data.
+Assistant messages are persisted as text. Responses and Messages URL citations are appended to the assistant text as a conventional Markdown `### Sources` section. The sources are therefore ordinary assistant content on later turns. Search queries, raw search results, tool call objects, assistant-generated images, thinking signatures, and hidden reasoning data are not persisted.
+
+When `[textllm].reasoning_summary = "note"`, provider-returned reasoning-summary content is appended as a `Note` block after the assistant response. For the Messages backend, this includes text from Anthropic `thinking` blocks. It remains visible to the reader but is excluded from future model and automatic-title requests. This is distinct from hidden chain-of-thought that a provider does not return, which textllm cannot request or store.
 
 ## Appending Responses
 
@@ -168,6 +190,6 @@ Producers should:
 
 ## Extension Guidance
 
-Future extensions should keep the file readable as Markdown and avoid changing the meaning of existing role blocks. New model capabilities should prefer explicit syntax or clearly documented settings over inference from ordinary prose.
+Future extensions should keep the file readable as Markdown and avoid changing the meaning of existing role blocks. New model capabilities should prefer explicit syntax or clearly documented settings over inference from ordinary prose. Provider-hosted tools are configured explicitly in TOML; arbitrary function execution is outside the current format.
 
 When adding textllm-owned metadata, choose names that are unlikely to collide with any-llm provider settings and document whether they belong in TOML settings, preamble text, or message content.

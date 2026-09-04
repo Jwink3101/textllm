@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.0 (2026-09-03)
+
+- Added an opt-in any-llm Responses backend with normalized streaming events.
+- Added an opt-in any-llm Messages backend, including native Anthropic and OpenRouter Messages transports, thinking, hosted web-search citations, system/developer conversion, image inputs, and usage events.
+- Added OpenAI and OpenRouter hosted web search, Markdown URL sources, and optional local-only reasoning summaries.
+- Added reasoning and provider configuration examples for OpenAI, Anthropic, and OpenRouter.
+- Prevented automatic-title calls from invoking configured tools or retaining tool choice and added title-specific provider overrides.
+- Required any-llm 1.27.0 or newer for native OpenRouter Responses support.
+
+## 0.8.2 (2026-09-02)
+
+- Added local-only `--- Note ---` blocks, which remain in conversation files but are excluded from chat and automatic-title model requests.
+
 ## 0.8.1 (2026-06-06)
 
 - Do not print an Assistant block until tokens start to stream
