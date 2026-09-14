@@ -89,7 +89,7 @@ Cache matching is based on request prefixes, not just the visible conversation t
 - Keep the model and relevant provider settings stable.
 - Expect edits near the beginning of a conversation to invalidate more cached content than edits near the end.
 
-Local `--- Note ---` blocks do not disturb the model-facing prefix because textllm removes them before normal chat and automatic-title requests. An automatic-title request has a different prompt shape and should not be expected to reuse the conversational prefix.
+Local `--- Note ---` and `--- Reasoning ---` blocks do not disturb the model-facing prefix because textllm removes them before normal chat and automatic-title requests. An automatic-title request has a different prompt shape and should not be expected to reuse the conversational prefix.
 
 ## Checking Cache Usage
 

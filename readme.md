@@ -112,10 +112,10 @@ max_tool_calls = 5
 
 [textllm]
 backend = "responses"
-reasoning_summary = "note"
+reasoning_summary = "block"
 ```
 
-The answer streams normally. URL citations are appended as a Markdown `Sources` section. With `reasoning_summary = "note"`, a provider-supplied reasoning summary is written in a local-only `--- Note ---` block. Raw hidden reasoning is not stored.
+The answer streams normally. URL citations are appended as a Markdown `Sources` section. With `reasoning_summary = "block"`, a provider-supplied reasoning summary is written in a local-only `--- Reasoning ---` block. Raw hidden reasoning is not stored.
 
 Use `--tokens {none,stderr,note}` to report every usage field returned by the provider for the latest conversational model call. Counts are not accumulated across earlier calls, and automatic-title usage is excluded. `stderr` prints the report separately from the streamed answer, while `note` appends it in a local-only `--- Note ---` block. The default is `none`. For persistent behavior, set the same value in the reserved table:
 
@@ -136,7 +136,7 @@ output_config = { effort = "medium" }
 
 [textllm]
 backend = "messages"
-reasoning_summary = "note"
+reasoning_summary = "block"
 ```
 
 The Messages backend requires `max_tokens`. It converts `System` and `Developer` blocks to the separate Messages system prompt and converts Markdown image inputs to Anthropic image blocks.
@@ -151,7 +151,7 @@ output_config = { effort = "medium" }
 
 [textllm]
 backend = "messages"
-reasoning_summary = "note"
+reasoning_summary = "block"
 ```
 
 ## Format Description
@@ -176,7 +176,7 @@ Note that providers require API keys. Keys can be passed through settings when a
 
 ### (3) Conversation
 
-The conversation is written with simple Markdown role blocks. `System`, `Developer`, `User`, and `Assistant` are supported and are sent as OpenAI-style roles. `Note` blocks are local annotations that remain in the Markdown file and are never sent to the model, including during automatic title generation.
+The conversation is written with simple Markdown role blocks. `System`, `Developer`, `User`, and `Assistant` are supported and are sent as OpenAI-style roles. `Note` and `Reasoning` blocks are local annotations that remain in the Markdown file and are never sent to the model, including during automatic title generation. `Reasoning` is used for provider-returned reasoning summaries when selected.
 
 ```text
 --- System ---
@@ -194,6 +194,10 @@ The response.
 --- Note ---
 
 A private reminder for the human reader. This is not sent to the model.
+
+--- Reasoning ---
+
+A provider-returned reasoning summary. This is not sent to the model.
 ```
 
 Generally, you want the final block to be the new `User` question, but it does not have to be if `--no-require-user-prompt` is used. A new `--- User ---` heading will be added after the last response.

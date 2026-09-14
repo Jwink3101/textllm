@@ -5,7 +5,7 @@ This project tests `textllm` as a local text-file workflow, not as a live model 
 ## Goals
 
 - Verify the CLI behavior users rely on: creating conversation files, appending prompts, always streaming output to stdout and the conversation file, reporting provider token usage to stderr or a local-only note, setting titles, renaming files, reading stdin/editor input, loading templates, and applying environment defaults.
-- Verify the Markdown conversation format: title parsing, TOML settings, role blocks, escaped role markers, adjacent role merging, local-only note filtering, and message conversion.
+- Verify the Markdown conversation format: title parsing, TOML settings, role blocks, escaped role markers, adjacent role merging, local-only note and reasoning filtering, and message conversion.
 - Verify image, attachment, and include handling as transport behavior: Markdown image references, `@attach` links, and `@include` links are found, local files are read and converted to data URLs or UTF-8 text, reference links resolve, embedded data URLs are preserved, and media/file blocks are converted for the selected model boundary.
 - Verify Responses behavior: OpenAI and OpenRouter routing, event normalization, reasoning-summary handling, hosted web-search status, citation rendering, usage, and title-call tool isolation.
 - Verify Messages behavior: Anthropic routing, OpenRouter native-endpoint transport selection, required token limits, system/developer and image conversion, text and thinking events, hosted web-search status, citations, split usage merging, and title-call tool isolation.
@@ -16,7 +16,7 @@ This project tests `textllm` as a local text-file workflow, not as a live model 
 
 The automated suite uses deterministic test streams instead of a live provider. Tests set `TEXTLLM_TEST_MODE=1`, and in-process tests also set `textllm.TEST_MODE = True`. In that mode, `iter_completion_text()` yields deterministic completion chunks, while the Responses and Messages backends yield normalized deterministic events rather than making live any-llm calls.
 
-The fake streams sit at the same model boundaries as production. Production code still parses files, builds messages, filters local-only `Note` blocks from chat and title requests, processes images and attachments, merges adjacent same-role messages, normalizes events, writes responses and citations, and runs rename/title logic. This keeps the tests focused on `textllm` behavior while removing live provider cost, latency, nondeterminism, and account setup.
+The fake streams sit at the same model boundaries as production. Production code still parses files, builds messages, filters local-only `Note` and `Reasoning` blocks from chat and title requests, processes images and attachments, merges adjacent same-role messages, normalizes events, writes responses and citations, and runs rename/title logic. This keeps the tests focused on `textllm` behavior while removing live provider cost, latency, nondeterminism, and account setup.
 
 Backend mocks are useful for targeted tests of OpenAI-style chunk parsing, but they should not replace `TEXTLLM_TEST_MODE=1` for subprocess tests or dynamic assertions. The subprocess suite needs deterministic behavior that survives a fresh Python interpreter.
 
@@ -36,7 +36,7 @@ These responses are intentionally simple. They are not meant to simulate model r
 
 textllm always calls the model through a streaming path. Chat responses are printed to stdout while response chunks are also written to the conversation file. Title generation also uses the streaming path, but suppresses stdout and file streaming so title chunks do not mix with the user-visible answer or conversation body.
 
-The fake streams yield deterministic answer chunks so all three backends exercise chunk accumulation, stdout streaming, and file streaming. Responses and Messages tests additionally exercise non-answer event handling and source-list finalization. Targeted backend mocks verify provider usage fields, nested usage merging, completion requests for streamed usage, and token reports sent to stderr or local-only notes. The assistant block is written lazily on the first answer text chunk; tests cover both normal streaming and failures or empty streams before any text is emitted. There is no non-streaming CLI mode.
+The fake streams yield deterministic answer chunks so all three backends exercise chunk accumulation, stdout streaming, and file streaming. Responses and Messages tests additionally exercise non-answer event handling, local-only reasoning blocks, and source-list finalization. Targeted backend mocks verify provider usage fields, nested usage merging, completion requests for streamed usage, and token reports sent to stderr or local-only notes. The assistant block is written lazily on the first answer text chunk; tests cover both normal streaming and failures or empty streams before any text is emitted. There is no non-streaming CLI mode.
 
 ## Subprocess Tests
 

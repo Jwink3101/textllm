@@ -9,7 +9,7 @@ These are some behaviors that are not tested automatically but should be confirm
 - OpenAI Responses web search with at least one Markdown source
 - OpenRouter Responses reasoning and `openrouter:web_search` with at least one Markdown source
 - Anthropic and OpenRouter completion reasoning with `reasoning_effort`
-- Anthropic Messages adaptive thinking with `thinking`, `output_config.effort`, and a local reasoning note
+- Anthropic Messages adaptive thinking with `thinking`, `output_config.effort`, and a local `Reasoning` block
 - Anthropic Messages manual thinking on a 4.5 model with `budget_tokens`
 - Anthropic Messages `web_search_20260318` with at least one Markdown source
 - Anthropic-format Messages through an `openrouter/anthropic/...` model, confirming thinking and native hosted-tool events use `$OPENROUTER_API_KEY`

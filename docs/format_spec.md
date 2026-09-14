@@ -47,6 +47,10 @@ Assistant response.
 --- Note ---
 
 A local note that is not sent to the model.
+
+--- Reasoning ---
+
+A local reasoning summary that is not sent to the model.
 ````
 
 The conversation begins at the first recognized role marker. Everything before that marker is preamble.
@@ -78,7 +82,7 @@ The `model` setting selects the any-llm provider and model. Producers should wri
 The `[textllm]` table defines local behavior. Supported keys are:
 
 - `backend`: `completion`, the default, `responses`, or `messages`.
-- `reasoning_summary`: `omit`, the default, `note`, or `stderr`.
+- `reasoning_summary`: `omit`, the default, `block`, or `stderr`.
 - `title`: a nested table of provider settings that override normal settings during automatic-title generation. Tools are removed from title calls even if specified here.
 
 The format does not validate provider settings or guarantee that a provider implements the selected backend or feature.
@@ -101,6 +105,7 @@ Conversation messages are written as role blocks. A role marker is a line contai
 --- User ---
 --- Assistant ---
 --- Note ---
+--- Reasoning ---
 ```
 
 Markers are case-insensitive when read. Producers should write the canonical capitalization above.
@@ -116,8 +121,9 @@ The supported roles map to model roles as follows:
 | `--- User ---` | `user` |
 | `--- Assistant ---` | `assistant` |
 | `--- Note ---` | Not sent; local-only content |
+| `--- Reasoning ---` | Not sent; local-only reasoning content |
 
-`Note` blocks are retained in the parsed file representation but omitted from every model request. This includes normal chat calls and the conversation content used for automatic title generation. Notes may appear between any role blocks, and a trailing note does not change which model message is considered last.
+`Note` and `Reasoning` blocks are retained in the parsed file representation but omitted from every model request. This includes normal chat calls and the conversation content used for automatic title generation. Local-only blocks may appear between any role blocks, and a trailing local-only block does not change which model message is considered last.
 
 Adjacent blocks with the same role are equivalent to one message with the block contents joined by a blank line. Producers should usually emit one block per role turn, but readers should tolerate adjacent same-role blocks.
 
@@ -200,7 +206,7 @@ The description remains text context. textllm appends the included contents afte
 
 Assistant messages are persisted as text. Responses and Messages URL citations are appended to the assistant text as a conventional Markdown `### Sources` section. The sources are therefore ordinary assistant content on later turns. Search queries, raw search results, tool call objects, assistant-generated images, thinking signatures, and hidden reasoning data are not persisted.
 
-When `[textllm].reasoning_summary = "note"`, provider-returned reasoning-summary content is appended as a `Note` block after the assistant response. For the Messages backend, this includes text from Anthropic `thinking` blocks. It remains visible to the reader but is excluded from future model and automatic-title requests. This is distinct from hidden chain-of-thought that a provider does not return, which textllm cannot request or store.
+When `[textllm].reasoning_summary = "block"`, provider-returned reasoning-summary content is appended as a `Reasoning` block after the assistant response. For the Messages backend, this includes text from Anthropic `thinking` blocks. It remains visible to the reader but is excluded from future model and automatic-title requests. This is distinct from hidden chain-of-thought that a provider does not return, which textllm cannot request or store.
 
 ## Appending Responses
 

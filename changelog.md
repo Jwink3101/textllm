@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.0 (2026-09-13)
+
+- Added local-only `--- Reasoning ---` blocks and use them for selected provider-returned reasoning summaries. The `reasoning_summary = "block"` selector replaces `reasoning_summary = "note"`.
+
 ## 0.9.3 (2026-09-04)
 
 - Fix AGAIN for missing attachments or includes. Now more robust to spaces in the names.

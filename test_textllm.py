@@ -551,7 +551,7 @@ def test_developer_role_and_adjacent_merge():
         clean()
 
 
-def test_note_blocks_are_never_sent_to_model(monkeypatch):
+def test_local_only_blocks_are_never_sent_to_model(monkeypatch):
     clean()
     try:
         os.makedirs("testdir")
@@ -578,6 +578,10 @@ def test_note_blocks_are_never_sent_to_model(monkeypatch):
                 --- Note ---
 
                 private chat note
+
+                --- Reasoning ---
+
+                private model reasoning
                 """).strip())
 
         convo = textllm.Conversation(path)
@@ -586,6 +590,7 @@ def test_note_blocks_are_never_sent_to_model(monkeypatch):
             "note",
             "user",
             "note",
+            "reasoning",
         ]
         assert [message["role"] for message in convo.messages] == ["system", "user"]
         assert "private" not in repr(convo.messages)
@@ -598,7 +603,11 @@ def test_note_blocks_are_never_sent_to_model(monkeypatch):
 
         monkeypatch.setattr(textllm, "iter_completion_text", fake_stream)
         convo.call_llm(
-            convo.messages + [{"role": "note", "content": "direct private note"}]
+            convo.messages
+            + [
+                {"role": "note", "content": "direct private note"},
+                {"role": "reasoning", "content": "direct private reasoning"},
+            ]
         )
         assert [message["role"] for message in calls[-1]] == ["system", "user"]
         assert "private" not in repr(calls[-1])
@@ -1050,7 +1059,7 @@ def test_responses_error_event_raises(monkeypatch):
         clean()
 
 
-def test_responses_backend_writes_sources_and_reasoning_note():
+def test_responses_backend_writes_sources_and_reasoning_block():
     clean()
     try:
         os.makedirs("testdir")
@@ -1065,7 +1074,7 @@ def test_responses_backend_writes_sources_and_reasoning_note():
 
                 [textllm]
                 backend = "responses"
-                reasoning_summary = "note"
+                reasoning_summary = "block"
                 ```
 
                 --- User ---
@@ -1080,22 +1089,23 @@ def test_responses_backend_writes_sources_and_reasoning_note():
         text = path.read_text()
         assert "### Sources" in cap.out
         assert "[Deterministic source](<https://example.com/>)" in text
-        assert "--- Note ---" in text
+        assert "--- Reasoning ---" in text
+        assert "--- Note ---" not in text
         assert "Deterministic reasoning summary." in text
         assert text.endswith("--- User ---  \n\n")
         reparsed = textllm.Conversation(path)
         assert "Deterministic reasoning summary" not in repr(reparsed.messages)
         assert (
             textllm.Conversation._escape_role_markers(
-                "Summary\n--- User ---\nstill local"
+                "Summary\n--- Reasoning ---\nstill local"
             )
-            == "Summary\n\\--- User ---\nstill local"
+            == "Summary\n\\--- Reasoning ---\nstill local"
         )
     finally:
         clean()
 
 
-def test_messages_backend_writes_sources_and_reasoning_note():
+def test_messages_backend_writes_sources_and_reasoning_block():
     clean()
     try:
         os.makedirs("testdir")
@@ -1112,7 +1122,7 @@ def test_messages_backend_writes_sources_and_reasoning_note():
 
                 [textllm]
                 backend = "messages"
-                reasoning_summary = "note"
+                reasoning_summary = "block"
                 ```
 
                 --- User ---
@@ -1127,7 +1137,8 @@ def test_messages_backend_writes_sources_and_reasoning_note():
         text = path.read_text()
         assert "### Sources" in cap.out
         assert "[Deterministic source](<https://example.com/>)" in text
-        assert "--- Note ---" in text
+        assert "--- Reasoning ---" in text
+        assert "--- Note ---" not in text
         assert "Deterministic reasoning summary." in text
         assert text.endswith("--- User ---  \n\n")
         assert "Deterministic reasoning summary" not in repr(

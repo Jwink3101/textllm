@@ -69,13 +69,13 @@ reasoning = { effort = "high", summary = "auto" }
 
 [textllm]
 backend = "responses"
-reasoning_summary = "note"
+reasoning_summary = "block"
 ```
 
 `reasoning_summary` accepts:
 
 - `omit`, the default, which does not retain the summary.
-- `note`, which appends it in a local-only `--- Note ---` block.
+- `block`, which appends it in a local-only `--- Reasoning ---` block.
 - `stderr`, which logs it when the selected CLI verbosity displays informational logs.
 
 These are summaries intentionally returned by the provider. textllm does not request or persist raw hidden chain-of-thought.
@@ -90,7 +90,7 @@ reasoning = { effort = "medium" }
 
 [textllm]
 backend = "responses"
-reasoning_summary = "note"
+reasoning_summary = "block"
 ```
 
 OpenRouter reads `$OPENROUTER_API_KEY` normally. Its Responses request schema fixes `store` to false and also exposes `previous_response_id`. textllm does not rely on either field; it replays the Markdown conversation on every call so the file remains the source of truth.
@@ -109,7 +109,7 @@ output_config = { effort = "medium" }
 
 [textllm]
 backend = "messages"
-reasoning_summary = "note"
+reasoning_summary = "block"
 ```
 
 Claude 4.5 and older supported reasoning models require manual extended thinking with a token budget:
@@ -121,19 +121,19 @@ thinking = { type = "enabled", budget_tokens = 8000 }
 
 [textllm]
 backend = "messages"
-reasoning_summary = "note"
+reasoning_summary = "block"
 ```
 
 Do not combine an adaptive `thinking` object with `budget_tokens`. Effort belongs in `output_config`, not in `thinking`. Model support and valid effort levels vary, and thinking consumes the same `max_tokens` output allowance as answer text.
 
-Anthropic sends thinking content in `thinking_delta` stream events. textllm treats provider-returned thinking text as its normalized reasoning-summary stream: `omit` discards it, `stderr` logs it, and `note` writes it to a local-only `Note` block. This is content deliberately exposed by the provider, not access to unreturned hidden chain-of-thought. The note is excluded from later requests, and textllm does not preserve Anthropic thinking signatures or build a client-side tool loop.
+Anthropic sends thinking content in `thinking_delta` stream events. textllm treats provider-returned thinking text as its normalized reasoning-summary stream: `omit` discards it, `stderr` logs it, and `block` writes it to a local-only `Reasoning` block. This is content deliberately exposed by the provider, not access to unreturned hidden chain-of-thought. The reasoning block is excluded from later requests, and textllm does not preserve Anthropic thinking signatures or build a client-side tool loop.
 
 The Markdown request is adapted to the Messages shape before any-llm is called:
 
 - `System` and `Developer` blocks are joined, in order, into the separate Messages `system` parameter. A top-level TOML `system` setting is placed before them.
 - `User` and `Assistant` blocks become the Messages `messages` list.
 - Local and embedded images become Anthropic base64 image sources. HTTP(S) images become URL image sources.
-- `Note` blocks remain local and are removed before conversion.
+- `Note` and `Reasoning` blocks remain local and are removed before conversion.
 
 any-llm can expose its Messages interface for other providers through a Chat Completions compatibility bridge. That can be useful for a uniform application interface, but native-only parameters and exact hosted-tool behavior require a provider with a Messages API. Prefer `responses` for OpenAI features documented here.
 
@@ -150,7 +150,7 @@ tools = [{ type = "web_search_20260318", name = "web_search", max_uses = 5 }]
 
 [textllm]
 backend = "messages"
-reasoning_summary = "note"
+reasoning_summary = "block"
 ```
 
 With any-llm 1.27.0, the ordinary `provider="openrouter"` Messages implementation uses any-llm's Chat Completions compatibility bridge even though OpenRouter now has a native Messages endpoint. textllm avoids that downgrade: for this backend and model prefix, it configures any-llm's Anthropic transport with OpenRouter's `https://openrouter.ai/api` base URL and the OpenRouter key. The request therefore reaches `https://openrouter.ai/api/v1/messages`, while the model id remains `anthropic/claude-sonnet-4.6`. Anthropic-format thinking, image, and tool fields are preserved; actual model and routed-provider support still determines which features succeed.
@@ -169,7 +169,7 @@ max_tool_calls = 5
 
 [textllm]
 backend = "responses"
-reasoning_summary = "note"
+reasoning_summary = "block"
 ```
 
 OpenRouter provides a namespaced `openrouter:web_search` server tool that can be used with models from different upstream providers:
@@ -182,7 +182,7 @@ max_tool_calls = 5
 
 [textllm]
 backend = "responses"
-reasoning_summary = "note"
+reasoning_summary = "block"
 ```
 
 Anthropic-hosted web search is available through the Messages backend. Anthropic versions server-tool schemas by date; this example selects the `20260318` schema:
@@ -196,7 +196,7 @@ tools = [{ type = "web_search_20260318", name = "web_search", max_uses = 5 }]
 
 [textllm]
 backend = "messages"
-reasoning_summary = "note"
+reasoning_summary = "block"
 ```
 
 Older active Anthropic web-search tool versions may be preferable when their model coverage or feature set better matches the request. Check Anthropic's tool reference before selecting a dated type.
@@ -315,7 +315,7 @@ events = messages(
 ## Limitations
 
 - Responses support depends on the any-llm provider. The completion backend remains the portable default.
-- The Messages backend only persists final assistant text, URL citations, and an optional local reasoning note. It does not preserve thinking signatures, tool-use blocks, arbitrary content blocks, or provider-side state for later turns.
+- The Messages backend only persists final assistant text, URL citations, and an optional local `Reasoning` block. It does not preserve thinking signatures, tool-use blocks, arbitrary content blocks, or provider-side state for later turns.
 - textllm replays the readable Markdown conversation on every call. It does not use `previous_response_id`, remote conversation storage, encrypted reasoning state, or provider-side persistent state.
 - Only provider-hosted tools are transported. textllm does not execute arbitrary local function tools or implement a client-side agent loop.
 - Citations received before interruption may not have reached the completed response, so a partial streamed answer can lack its final source list.

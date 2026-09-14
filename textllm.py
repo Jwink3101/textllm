@@ -22,7 +22,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv  # pip install python-dotenv
 
-__version__ = "0.9.3"
+__version__ = "0.10.0"
 
 log = logging.getLogger("textllm")
 
@@ -123,9 +123,10 @@ FLAG2ROLE = {
     "--- user ---": "user",
     "--- assistant ---": "assistant",
     "--- note ---": "note",
+    "--- reasoning ---": "reasoning",
 }
 
-LOCAL_ONLY_ROLES = {"note"}
+LOCAL_ONLY_ROLES = {"note", "reasoning"}
 
 CONVO_PATTERN = re.compile(
     "(" + "|".join("^" + re.escape(flag) for flag in FLAG2ROLE) + ")",
@@ -918,9 +919,9 @@ class Conversation:
         textllm_settings = settings.pop("textllm", {})
         backend = textllm_settings.get("backend", "completion")
         reasoning_summary_mode = textllm_settings.get("reasoning_summary", "omit")
-        if reasoning_summary_mode not in ("omit", "note", "stderr"):
+        if reasoning_summary_mode not in ("omit", "block", "stderr"):
             raise ValueError(
-                "textllm.reasoning_summary must be 'omit', 'note', or 'stderr'"
+                "textllm.reasoning_summary must be 'omit', 'block', or 'stderr'"
             )
         token_mode = (
             textllm_settings.get("tokens", "none") if tokens is None else tokens
@@ -1010,7 +1011,7 @@ class Conversation:
             usage_metadata=usage_metadata,
             reasoning_summary=(
                 "".join(reasoning_summary)
-                if reasoning_summary_mode == "note" and reasoning_summary
+                if reasoning_summary_mode == "block" and reasoning_summary
                 else None
             ),
             citations=citations,
@@ -1059,7 +1060,7 @@ class Conversation:
 
             if response.reasoning_summary:
                 file.write(
-                    "\n\n--- Note ---  \n\nReasoning summary:\n\n"
+                    "\n\n--- Reasoning ---  \n\n"
                     + self._escape_role_markers(response.reasoning_summary)
                 )
 
@@ -1097,7 +1098,7 @@ class Conversation:
 
     @staticmethod
     def _escape_role_markers(text):
-        """Escape reserved role markers at the start of summary lines."""
+        """Escape reserved role markers at the start of generated text lines."""
 
         lines = []
         for line in text.splitlines(keepends=True):

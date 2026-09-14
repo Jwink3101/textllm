@@ -16,7 +16,7 @@ The `[textllm.title]` table provides title-specific provider overrides. Future v
 
 ## Richer Outputs
 
-Assistant responses remain readable text. URL citations use a Markdown `Sources` section, and optional provider-returned reasoning content uses local-only `Note` blocks. Search traces, thinking signatures, and raw tool objects are intentionally not persisted.
+Assistant responses remain readable text. URL citations use a Markdown `Sources` section, and optional provider-returned reasoning content uses local-only `Reasoning` blocks. Search traces, thinking signatures, and raw tool objects are intentionally not persisted.
 
 Image output or image generation may require a Responses-style backend or provider-specific any-llm support. That should be designed as an explicit extension to the conversation format rather than inferred from the current text-only assistant block.
 
