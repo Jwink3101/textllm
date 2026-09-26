@@ -22,7 +22,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv  # pip install python-dotenv
 
-__version__ = "0.10.0"
+__version__ = "0.10.1"
 
 log = logging.getLogger("textllm")
 
@@ -69,6 +69,10 @@ class _DYNAMIC_ENV_CONFIG:
     @property
     def TEXTLLM_DEFAULT_TEMPERATURE(self):
         return float(os.environ.get("TEXTLLM_DEFAULT_TEMPERATURE", 1.0))
+
+    @property
+    def TEXTLLM_DEFAULT_HEADER_LEVEL(self):
+        return int(os.environ.get("TEXTLLM_DEFAULT_HEADER_LEVEL", 0))
 
     @property
     def TEXTLLM_TEMPLATE_FILE(self):
@@ -128,14 +132,42 @@ FLAG2ROLE = {
 
 LOCAL_ONLY_ROLES = {"note", "reasoning"}
 
+ROLE_NAMES_PATTERN = "|".join(re.escape(role) for role in FLAG2ROLE.values())
+ROLE_MARKER_PATTERN = rf"(?:#{{1,6}}[ \t]+)?--- (?:{ROLE_NAMES_PATTERN}) ---"
 CONVO_PATTERN = re.compile(
-    "(" + "|".join("^" + re.escape(flag) for flag in FLAG2ROLE) + ")",
-    flags=re.DOTALL | re.MULTILINE | re.IGNORECASE,
+    rf"^({ROLE_MARKER_PATTERN})",
+    flags=re.MULTILINE | re.IGNORECASE,
+)
+ROLE_MARKER_RE = re.compile(
+    rf"^(?:#{{1,6}}[ \t]+)?--- ({ROLE_NAMES_PATTERN}) ---",
+    flags=re.IGNORECASE,
 )
 
 DEFAULT_FILEPATH = "New Conversation.md"
 
 TEST_MODE = False
+
+
+def _role_from_marker(marker):
+    """Return the normalized role named by a role-marker line."""
+
+    match = ROLE_MARKER_RE.match(marker)
+    if not match:
+        raise ValueError(f"Invalid role marker: {marker!r}")
+    return match.group(1).lower()
+
+
+def _role_marker(role, header_level=0):
+    """Format a canonical role marker at the requested Markdown heading level."""
+
+    if (
+        isinstance(header_level, bool)
+        or not isinstance(header_level, int)
+        or not 0 <= header_level <= 6
+    ):
+        raise ValueError("textllm.header_level must be an integer from 0 through 6")
+    prefix = f"{'#' * header_level} " if header_level else ""
+    return f"{prefix}--- {role} ---"
 
 
 def _test_mode_enabled():
@@ -895,7 +927,10 @@ class Conversation:
         print_stream : bool, optional
             Whether to print response chunks to stdout while collecting them.
         stream_writer : file-like, optional
-            Writer that receives response chunks as they arrive.
+            Writer that receives response chunks as they arrive. When
+            ``reasoning_summary`` is ``block``, a writer-provided
+            ``write_reasoning()`` method also receives reasoning-summary
+            chunks in event order.
         title_call : bool, optional
             Disable tools and apply optional title-specific settings.
         tokens : {None, "none", "stderr", "note"}, optional
@@ -969,6 +1004,13 @@ class Conversation:
                     stream_writer.flush()
             elif event.kind == "reasoning_summary_delta":
                 reasoning_summary.append(event.text)
+                if (
+                    reasoning_summary_mode == "block"
+                    and stream_writer
+                    and hasattr(stream_writer, "write_reasoning")
+                ):
+                    stream_writer.write_reasoning(event.text)
+                    stream_writer.flush()
             elif event.kind == "citation":
                 citations.append(event.data)
             elif event.kind == "usage":
@@ -1026,7 +1068,7 @@ class Conversation:
 
         return response
 
-    def chat(self, require_user_prompt=True, tokens=None):
+    def chat(self, require_user_prompt=True, tokens=None, header_level=None):
         """Append one assistant response to the conversation file.
 
         Parameters
@@ -1035,6 +1077,10 @@ class Conversation:
             Require the current conversation to end with a user message.
         tokens : {None, "none", "stderr", "note"}, optional
             Override the conversation's token-reporting setting.
+        header_level : int or None, optional
+            Markdown heading level for newly written role markers. ``None``
+            uses ``[textllm].header_level``, then
+            ``$TEXTLLM_DEFAULT_HEADER_LEVEL``, then 0.
 
         Raises
         ------
@@ -1047,9 +1093,18 @@ class Conversation:
         ):
             raise NoUserMessageError("Must have a new user message")
 
+        if header_level is None:
+            textllm_settings = self.settings.get("textllm", {})
+            if "header_level" in textllm_settings:
+                header_level = textllm_settings["header_level"]
+            else:
+                header_level = CONFIG.TEXTLLM_DEFAULT_HEADER_LEVEL
+        # Validate before opening the file for mutation.
+        _role_marker("User", header_level)
+
         with open(self.filepath, "r+") as file:
             self._seek_append_point(file)
-            stream_writer = self._AssistantBlockWriter(file)
+            stream_writer = self._ResponseBlockWriter(file, header_level)
 
             response = self.call_llm(
                 messages=self.messages,
@@ -1058,40 +1113,50 @@ class Conversation:
                 tokens=tokens,
             )
 
-            if response.reasoning_summary:
-                file.write(
-                    "\n\n--- Reasoning ---  \n\n"
-                    + self._escape_role_markers(response.reasoning_summary)
-                )
-
             token_mode = self.settings.get("textllm", {}).get("tokens", "none")
             if tokens is not None:
                 token_mode = tokens
             token_usage = _format_token_usage(response.usage_metadata)
             if token_mode == "note" and token_usage:
-                file.write("\n\n--- Note ---  \n\n" + token_usage)
+                file.write(
+                    f"\n\n{_role_marker('Note', header_level)}  \n\n" + token_usage
+                )
 
-            file.write("\n\n--- User ---  \n\n")
+            file.write(f"\n\n{_role_marker('User', header_level)}  \n\n")
             file.flush()
 
         # Not really needed but in case I do more with it later
         self.messages.append({"role": "assistant", "content": response.content})
         log.info(f"Updated {self.filepath!r}")
 
-    class _AssistantBlockWriter:
-        """Write the assistant heading only when response text exists."""
+    class _ResponseBlockWriter:
+        """Write answer and reasoning blocks in model-event order."""
 
-        def __init__(self, file):
+        def __init__(self, file, header_level=0):
             self.file = file
-            self.started = False
+            self.header_level = header_level
+            self.role = None
+            self.at_line_start = True
 
-        def write(self, text):
+        def _write_role(self, role, text, *, escape_role_markers=False):
             if not text:
                 return
-            if not self.started:
-                self.file.write("\n\n--- Assistant ---  \n\n")
-                self.started = True
+            if self.role != role:
+                marker = _role_marker(role, self.header_level)
+                self.file.write(f"\n\n{marker}  \n\n")
+                self.role = role
+                self.at_line_start = True
+            if escape_role_markers:
+                prefix = "" if self.at_line_start else "x"
+                text = Conversation._escape_role_markers(prefix + text)[len(prefix) :]
             self.file.write(text)
+            self.at_line_start = text.endswith("\n")
+
+        def write(self, text):
+            self._write_role("Assistant", text)
+
+        def write_reasoning(self, text):
+            self._write_role("Reasoning", text, escape_role_markers=True)
 
         def flush(self):
             self.file.flush()
@@ -1102,7 +1167,7 @@ class Conversation:
 
         lines = []
         for line in text.splitlines(keepends=True):
-            if any(line.lower().startswith(flag) for flag in FLAG2ROLE):
+            if ROLE_MARKER_RE.match(line):
                 line = "\\" + line
             lines.append(line)
         return "".join(lines)
@@ -1220,7 +1285,7 @@ class Conversation:
 
         # Split will split at the flags. If the first item is a flag, then there is no
         # top matter. If it isn't a flag, the first item is top matter.
-        if split_text[0].lower() not in FLAG2ROLE:
+        if not ROLE_MARKER_RE.match(split_text[0]):
             top = split_text.pop(0)
         else:
             top = ""
@@ -1229,7 +1294,6 @@ class Conversation:
         res["settings"] = Conversation.read_settings(top)
         res["top"] = top
 
-        re_role = re.compile("--- (.*) ---")
         res["conversation"] = conversation = []
         for flag, msg in grouper(split_text, 2):
             msg = msg.strip()
@@ -1239,11 +1303,11 @@ class Conversation:
             # Clean up and unescape
             msg_lines = []
             for line in msg.strip().split("\n"):
-                if any(line.lower().startswith(rf"\{flag}") for flag in FLAG2ROLE):
+                if line.startswith("\\") and ROLE_MARKER_RE.match(line[1:]):
                     line = line[1:]
                 msg_lines.append(line)
 
-            role = re_role.findall(flag)[0].lower()  # Must be a flag from initial split
+            role = _role_from_marker(flag)
             content = "\n".join(msg_lines)
 
             conversation.append({"role": role, "content": content})
@@ -1267,13 +1331,12 @@ class Conversation:
             if item["role"] in LOCAL_ONLY_ROLES:
                 continue
 
-            flag = f"--- {item['role']} ---"
             msg = item["content"]
 
             # Clean up and unescape
             msg_lines = []
             for line in msg.strip().split("\n"):
-                if any(line.lower().startswith(rf"\{flag}") for flag in FLAG2ROLE):
+                if line.startswith("\\") and ROLE_MARKER_RE.match(line[1:]):
                     line = line[1:]
                 msg_lines.append(line)
 
@@ -1326,7 +1389,7 @@ class Conversation:
             for include in includes:
                 content[0]["text"] += self._included_attachment_text(include)
 
-            conversation.append({"role": FLAG2ROLE[flag.lower()], "content": content})
+            conversation.append({"role": item["role"], "content": content})
 
         return merge_message_runs(conversation)
 
@@ -1881,6 +1944,19 @@ def cli(argv=None):
     )
 
     parser.add_argument(
+        "--header-level",
+        type=int,
+        choices=range(7),
+        default=None,
+        metavar="{0..6}",
+        help="""
+            Markdown heading level for newly written role markers. 0 writes plain
+            separators. Defaults to [textllm].header_level, then
+            $TEXTLLM_DEFAULT_HEADER_LEVEL, then 0.
+            """,
+    )
+
+    parser.add_argument(
         "--require-user-prompt",
         dest="require_user_prompt",
         action=argparse.BooleanOptionalAction,
@@ -1921,8 +1997,8 @@ def cli(argv=None):
         title="Edit Settings",
         description="""
             These options let you add the prompt and/or edit the file directly
-            before calling the LLM. Note it is assumed that a '--- User ---'
-            heading is present (as it should be by default).
+            before calling the LLM. Note it is assumed that a User role marker
+            is present (as it should be by default).
             """,
     )
     edit.add_argument(
@@ -2051,7 +2127,11 @@ def cli(argv=None):
                 return convo
             return
 
-        convo.chat(require_user_prompt=args.require_user_prompt, tokens=args.tokens)
+        convo.chat(
+            require_user_prompt=args.require_user_prompt,
+            tokens=args.tokens,
+            header_level=args.header_level,
+        )
 
         if args.rename:
             convo.rename_by_title()

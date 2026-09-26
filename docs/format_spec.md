@@ -82,6 +82,7 @@ The `model` setting selects the any-llm provider and model. Producers should wri
 The `[textllm]` table defines local behavior. Supported keys are:
 
 - `backend`: `completion`, the default, `responses`, or `messages`.
+- `header_level`: an integer from `0` through `6` controlling newly written role markers. `0` writes plain separators; levels `1` through `6` write ATX Markdown headings. The `--header-level` CLI option overrides this setting. When neither is present, `$TEXTLLM_DEFAULT_HEADER_LEVEL` supplies the default and falls back to `0`; it may be loaded from the process environment, `.env`, `$TEXTLLM_ENV_PATH`, or `--env`.
 - `reasoning_summary`: `omit`, the default, `block`, or `stderr`.
 - `title`: a nested table of provider settings that override normal settings during automatic-title generation. Tools are removed from title calls even if specified here.
 
@@ -108,7 +109,7 @@ Conversation messages are written as role blocks. A role marker is a line contai
 --- Reasoning ---
 ```
 
-Markers are case-insensitive when read. Producers should write the canonical capitalization above.
+Each marker may optionally be prefixed by an ATX heading marker and a space, from `# --- User ---` through `###### --- User ---`. Plain and heading-prefixed markers may be mixed in one file. Markers are case-insensitive when read. Producers should use canonical role capitalization and a heading level from `0` through `6`.
 
 The message content is all text after a role marker up to the next recognized role marker or the end of the file. Leading and trailing blank space around a message block is not significant.
 
@@ -131,10 +132,11 @@ Adjacent blocks with the same role are equivalent to one message with the block 
 
 Message content is Markdown text. textllm does not parse general Markdown structure for model text; it preserves the block content as text except for recognized image lines in user messages.
 
-Code fences, lists, headings, tables, links, and ordinary Markdown image syntax are valid message text. Role markers are reserved syntax when they appear at the start of a line. This is unlikely to matter in normal assistant responses, but a literal role marker line can be escaped by prefixing it with a backslash:
+Code fences, lists, headings, tables, links, and ordinary Markdown image syntax are valid message text. Plain and heading-prefixed role markers are reserved syntax when they appear at the start of a line. This is unlikely to matter in normal assistant responses, but a literal role marker line can be escaped by prefixing it with a backslash:
 
 ```text
 \--- User ---
+\## --- Assistant ---
 ```
 
 Readers should treat that as literal message text:
@@ -206,11 +208,11 @@ The description remains text context. textllm appends the included contents afte
 
 Assistant messages are persisted as text. Responses and Messages URL citations are appended to the assistant text as a conventional Markdown `### Sources` section. The sources are therefore ordinary assistant content on later turns. Search queries, raw search results, tool call objects, assistant-generated images, thinking signatures, and hidden reasoning data are not persisted.
 
-When `[textllm].reasoning_summary = "block"`, provider-returned reasoning-summary content is appended as a `Reasoning` block after the assistant response. For the Messages backend, this includes text from Anthropic `thinking` blocks. It remains visible to the reader but is excluded from future model and automatic-title requests. This is distinct from hidden chain-of-thought that a provider does not return, which textllm cannot request or store.
+When `[textllm].reasoning_summary = "block"`, provider-returned reasoning-summary content is written as local-only `Reasoning` blocks in stream-event order. For the Messages backend, this includes text from Anthropic `thinking` blocks. A response may contain alternating `Reasoning` and `Assistant` blocks. Reasoning remains visible to the reader but is excluded from future model and automatic-title requests; assistant blocks that become adjacent after that filtering are merged with a blank line. This is distinct from hidden chain-of-thought that a provider does not return, which textllm cannot request or store.
 
 ## Appending Responses
 
-A normal model call expects the conversation to end with a `User` block. textllm starts an `Assistant` block when the model emits the first text chunk, writes later response chunks into that block as they arrive, and then writes a new empty `User` block for the next turn. If the model call fails before emitting text, textllm leaves the conversation body unchanged.
+A normal model call expects the conversation to end with a `User` block. textllm starts an `Assistant` block when the model emits an answer-text chunk and, when block-mode reasoning is enabled, starts a `Reasoning` block when the model emits a reasoning chunk. It opens a new block whenever the persisted event role changes, preserving event order, and writes a new empty `User` block after successful completion. If the model call fails before emitting any persisted answer or block-mode reasoning content, textllm leaves the conversation body unchanged. A failure after persisted content begins may leave the partial event transcript in the file.
 
 Tools may allow calls where the file does not end with a user message, but that is operational behavior rather than a different file format.
 
@@ -220,6 +222,7 @@ Readers should:
 
 - Ignore empty message blocks.
 - Accept role marker capitalization differences.
+- Accept plain role markers and role markers expressed as Markdown headings from level 1 through 6.
 - Accept files with no preamble.
 - Accept files with no settings block when defaults are available.
 - Preserve unrecognized Markdown in preamble and message content.

@@ -55,11 +55,11 @@ Template rendering is intentionally limited. Only documented placeholders are ex
 
 ### Settings
 
-Settings are loaded from the conversation's TOML block and merged over the default template settings. `model` is consumed by textllm to select the any-llm provider and model. The reserved `[textllm]` table controls backend selection, reasoning-summary handling, and title-specific overrides. Other settings are passed to any-llm.
+Settings are loaded from the conversation's TOML block and merged over the default template settings. `model` is consumed by textllm to select the any-llm provider and model. The reserved `[textllm]` table controls backend selection, role-marker heading level, reasoning-summary handling, and title-specific overrides. Other settings are passed to any-llm.
 
 This keeps textllm small and avoids maintaining a provider setting allowlist. It also means invalid or unsupported provider settings usually fail at the any-llm or provider layer.
 
-Environment variables supply defaults and provider credentials. Loading order is:
+Environment variables supply defaults and provider credentials. `$TEXTLLM_DEFAULT_HEADER_LEVEL` supplies the role-marker heading level when neither `[textllm].header_level` nor `--header-level` is set. Environment loading order is:
 
 1. `$TEXTLLM_ENV_PATH`, when set.
 2. A discovered `.env` file.
@@ -93,15 +93,17 @@ In deterministic test mode, the same boundaries yield fake chunks or events inst
 
 The completion backend passes `reasoning_effort` through to any-llm. The Responses backend passes the native `reasoning` object and hosted-tool declarations through. The Messages backend passes Anthropic-style parameters such as `thinking`, `output_config`, and `tools`; it requires `max_tokens`, as the underlying interface does. Anthropic and OpenRouter handle this request through Messages endpoints, while other any-llm providers may bridge it through Chat Completions. Web search runs at the provider; textllm does not implement a search client or execute arbitrary local function tools.
 
-Only answer deltas are written as assistant text while they arrive. URL citation annotations are collected, deduplicated, and appended as a Markdown `Sources` section after the answer. Provider-returned reasoning content may be omitted, logged, or persisted as a local-only `Reasoning` block. Messages `thinking_delta` events use this same normalized path. Unreturned hidden reasoning is not accessible or stored, and Anthropic thinking signatures are not persisted.
+Answer deltas are written as assistant text while they arrive. URL citation annotations are collected, deduplicated, and appended as a Markdown `Sources` section after the answer. Provider-returned reasoning content may be omitted, logged, or streamed into local-only `Reasoning` blocks. In block mode, the file writer switches between `Reasoning` and `Assistant` blocks as the normalized event kind changes, preserving provider event order without sending reasoning to standard output. Messages `thinking_delta` events use this same normalized path. Unreturned hidden reasoning is not accessible or stored, and Anthropic thinking signatures are not persisted.
 
 The Markdown history remains the source of truth. Responses calls replay that history rather than relying on `previous_response_id` or provider-side conversation storage.
 
 ## File Update Behavior
 
-textllm appends model output rather than rewriting the whole conversation during normal chat. It starts the assistant block when the model emits the first text chunk, then writes response chunks into that block as they arrive. This avoids leaving an empty assistant block when a provider fails before producing text, while still preserving partial assistant output after streaming has started.
+textllm appends model output rather than rewriting the whole conversation during normal chat. It lazily starts a role block when the model emits the first persistable event, then writes matching chunks into that block as they arrive. Answer text uses `Assistant`; block-mode reasoning uses `Reasoning`. If the event kind changes, the writer starts another block, so reasoning and answer blocks may alternate. This avoids empty output blocks while preserving the provider's event chronology and any partial output after streaming has started.
 
-The append format is:
+The reader accepts role markers as plain separators or level 1 through 6 ATX Markdown headings. Newly appended markers use `--header-level`, `[textllm].header_level`, `$TEXTLLM_DEFAULT_HEADER_LEVEL`, then `0`, in descending precedence. Existing markers are not rewritten.
+
+Without persisted reasoning, the append format is:
 
 ```text
 --- Assistant ---
@@ -113,7 +115,9 @@ assistant response
 
 This leaves the file ready for the next turn.
 
-Role markers such as `--- User ---` are reserved syntax at the start of a line. textllm keeps read-side support for backslash-escaped markers, but generated assistant output is written directly rather than auto-escaped.
+With block-mode reasoning, the stream may instead contain any number of alternating `Reasoning` and `Assistant` blocks before the next `User` marker. On replay, local-only reasoning is removed and the remaining assistant blocks are merged with blank lines into one model-facing message.
+
+Role markers such as `--- User ---` and `## --- User ---` are reserved syntax at the start of a line. textllm keeps read-side support for backslash-escaped markers, but generated assistant output is written directly rather than auto-escaped.
 
 Title replacement is a separate write because it edits the first line when `!!AUTO TITLE!!` appears there. Rename is also separate and only runs when configured to do so.
 

@@ -1092,6 +1092,7 @@ def test_responses_backend_writes_sources_and_reasoning_block():
         assert "--- Reasoning ---" in text
         assert "--- Note ---" not in text
         assert "Deterministic reasoning summary." in text
+        assert text.index("--- Reasoning ---") < text.index("--- Assistant ---")
         assert text.endswith("--- User ---  \n\n")
         reparsed = textllm.Conversation(path)
         assert "Deterministic reasoning summary" not in repr(reparsed.messages)
@@ -1140,10 +1141,73 @@ def test_messages_backend_writes_sources_and_reasoning_block():
         assert "--- Reasoning ---" in text
         assert "--- Note ---" not in text
         assert "Deterministic reasoning summary." in text
+        assert text.index("--- Reasoning ---") < text.index("--- Assistant ---")
         assert text.endswith("--- User ---  \n\n")
         assert "Deterministic reasoning summary" not in repr(
             textllm.Conversation(path).messages
         )
+    finally:
+        clean()
+
+
+def test_reasoning_and_assistant_blocks_follow_event_order(monkeypatch):
+    clean()
+    try:
+        os.makedirs("testdir")
+        path = Path("testdir/interleaved-reasoning.md")
+        path.write_text(dedent("""
+                # interleaved reasoning
+
+                ```toml
+                model = "openai/gpt-5.5"
+
+                [textllm]
+                backend = "responses"
+                reasoning_summary = "block"
+                ```
+
+                --- User ---
+
+                hello
+                """).strip())
+
+        def fake_events(*, backend, model, messages, settings):
+            yield textllm.ModelEvent("reasoning_summary_delta", text="Think one.")
+            yield textllm.ModelEvent("output_text_delta", text="Answer one.")
+            yield textllm.ModelEvent("reasoning_summary_delta", text="Think two.")
+            yield textllm.ModelEvent("output_text_delta", text="Answer two.")
+            yield textllm.ModelEvent("completed")
+
+        monkeypatch.setattr(textllm, "iter_model_events", fake_events)
+        with Capture() as cap:
+            convo = textllm.Conversation(path)
+            convo.chat()
+
+        text = path.read_text()
+        markers = [
+            "--- Reasoning ---",
+            "--- Assistant ---",
+            "--- Reasoning ---",
+            "--- Assistant ---",
+        ]
+        positions = []
+        start = 0
+        for marker in markers:
+            position = text.index(marker, start)
+            positions.append(position)
+            start = position + len(marker)
+        assert positions == sorted(positions)
+        assert "Think one." not in cap.out
+        assert "Think two." not in cap.out
+        assert "Answer one.Answer two." in cap.out
+
+        reparsed = textllm.Conversation(path)
+        assert reparsed.messages[-1] == {
+            "role": "assistant",
+            "content": "Answer one.\n\nAnswer two.",
+        }
+        assert "Think one." not in repr(reparsed.messages)
+        assert "Think two." not in repr(reparsed.messages)
     finally:
         clean()
 
@@ -1628,6 +1692,137 @@ def test_parser_edges_and_image_code_blocks():
     assert includes == ["meeting notes (final).md"]
     with pytest.raises(ValueError, match="not defined"):
         textllm.process_msg_for_attachments(["[@attachment][missing]"])
+
+
+def test_role_markers_can_be_markdown_headings():
+    without_preamble = textllm.loads("### --- User ---\n\nHello")
+    assert without_preamble["title"] == ""
+    assert without_preamble["conversation"] == [
+        {"role": "user", "content": "Hello"}
+    ]
+
+    parsed = textllm.loads(dedent(r"""
+            # Conversation title
+
+            # --- System ---
+
+            System message.
+
+            ## --- User ---
+
+            User message.
+
+            ###### --- Assistant ---
+
+            Assistant message.
+            \# --- User ---
+            This is literal marker text.
+            """).strip())
+
+    assert parsed["title"] == "Conversation title"
+    assert parsed["conversation"] == [
+        {"role": "system", "content": "System message."},
+        {"role": "user", "content": "User message."},
+        {
+            "role": "assistant",
+            "content": (
+                "Assistant message.\n# --- User ---\nThis is literal marker text."
+            ),
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("cli_level", "expected_marker"),
+    [
+        (None, "## --- Assistant ---"),
+        (4, "#### --- Assistant ---"),
+        (0, "--- Assistant ---"),
+    ],
+)
+def test_header_level_config_and_cli_override(tmp_path, cli_level, expected_marker):
+    path = tmp_path / f"header-{cli_level}.md"
+    path.write_text(dedent("""
+            # Header test
+
+            ```toml
+            [textllm]
+            header_level = 2
+            ```
+
+            # --- User ---
+
+            hello
+            """).strip())
+    argv = [str(path), "--title", "off"]
+    if cli_level is not None:
+        argv.extend(["--header-level", str(cli_level)])
+
+    run_cli(argv)
+
+    text = path.read_text()
+    assert expected_marker in text
+    expected_user = expected_marker.replace("Assistant", "User")
+    assert text.endswith(f"{expected_user}  \n\n")
+
+
+def test_invalid_header_level_config_does_not_modify_file(tmp_path):
+    path = tmp_path / "invalid-header.md"
+    original = dedent("""
+        # Header test
+
+        ```toml
+        [textllm]
+        header_level = 7
+        ```
+
+        --- User ---
+
+        hello
+        """).strip()
+    path.write_text(original)
+
+    with pytest.raises(ValueError, match="header_level"):
+        textllm.Conversation(path).chat()
+
+    assert path.read_text() == original
+
+
+def test_header_level_environment_and_env_file(tmp_path, monkeypatch):
+    def write_conversation(name, header_level=None):
+        setting = (
+            f"\n[textllm]\nheader_level = {header_level}\n"
+            if header_level is not None
+            else ""
+        )
+        path = tmp_path / name
+        path.write_text(
+            f"# Header test\n\n```toml\n{setting}```\n\n--- User ---\n\nhello"
+        )
+        return path
+
+    monkeypatch.setenv("TEXTLLM_DEFAULT_HEADER_LEVEL", "3")
+    environment_path = write_conversation("environment.md")
+    run_cli([str(environment_path), "--title", "off"])
+    assert "### --- Assistant ---" in environment_path.read_text()
+
+    config_path = write_conversation("config.md", header_level=2)
+    run_cli([str(config_path), "--title", "off"])
+    assert "## --- Assistant ---" in config_path.read_text()
+
+    env_path = tmp_path / "header.env"
+    env_path.write_text("TEXTLLM_DEFAULT_HEADER_LEVEL=4")
+    env_file_path = write_conversation("env-file.md")
+    run_cli(
+        [
+            str(env_file_path),
+            "--title",
+            "off",
+            "--env",
+            str(env_path),
+        ]
+    )
+    assert "#### --- Assistant ---" in env_file_path.read_text()
 
 
 def test_stdin_prompt_joining_and_empty_prompt_file_edit():

@@ -46,6 +46,8 @@ Then modify the system prompt if needed and add your query under the user prompt
 
 textllm will update the title if needed, stream the response to stdout, append the response to the file, and add a new user block ready for the next prompt.
 
+Role separators may also be Markdown headings, such as `## --- User ---`. Set `[textllm].header_level` or `$TEXTLLM_DEFAULT_HEADER_LEVEL` to an integer from `0` through `6` to control newly written role markers; `0`, the default, writes plain separators. The `--header-level {0..6}` option overrides the file and environment settings for one invocation.
+
 ### Streaming and Prompts
 
 You can use `--prompt` to specify the new prompt and/or `--edit` to open a terminal text editor before running. textllm always streams the response to stdout while also writing response chunks to the conversation file as they arrive.
@@ -70,6 +72,7 @@ Most behavior is governed by command-line flags but there are a few exceptions.
 | `$TEXTLLM_EDITOR` | Set the editor for the `--edit` flag. Will fall back to `$EDITOR` and then `vi`. |
 | `$TEXTLLM_DEFAULT_MODEL` | Sets the default model if one is not specified and writes it into templates for new chats. |
 | `$TEXTLLM_DEFAULT_TEMPERATURE` | Sets the default temperature if one is not specified and writes it into templates for new chats. |
+| `$TEXTLLM_DEFAULT_HEADER_LEVEL` | Sets the default heading level for newly written role markers when the file does not set `[textllm].header_level`. Use `0` through `6`; the default is `0`. |
 | `$TEXTLLM_TEMPLATE_FILE` | Sets a file to read for the template. This is used for new chats but not for defaults, and is overridden by `--template`. |
 
 These can be set before calling textllm or via an environment file, either `.env` or with the `--env` flag. The file can also be specified with `$TEXTLLM_ENV_PATH` except for itself of course. Template selection goes from `--template`, then `$TEXTLLM_TEMPLATE_FILE` from the current environment or loaded environment files, then the built-in default.
@@ -115,7 +118,7 @@ backend = "responses"
 reasoning_summary = "block"
 ```
 
-The answer streams normally. URL citations are appended as a Markdown `Sources` section. With `reasoning_summary = "block"`, a provider-supplied reasoning summary is written in a local-only `--- Reasoning ---` block. Raw hidden reasoning is not stored.
+The answer streams normally. URL citations are appended as a Markdown `Sources` section. With `reasoning_summary = "block"`, provider-supplied reasoning is written in local-only `--- Reasoning ---` blocks in stream-event order. A provider may therefore produce alternating `Reasoning` and `Assistant` blocks. On later calls, the reasoning blocks are omitted and the assistant segments are merged into one model-facing message. Raw hidden reasoning is not stored.
 
 Use `--tokens {none,stderr,note}` to report every usage field returned by the provider for the latest conversational model call. Counts are not accumulated across earlier calls, and automatic-title usage is excluded. `stderr` prints the report separately from the streamed answer, while `note` appends it in a local-only `--- Note ---` block. The default is `none`. For persistent behavior, set the same value in the reserved table:
 
@@ -178,6 +181,8 @@ Note that providers require API keys. Keys can be passed through settings when a
 
 The conversation is written with simple Markdown role blocks. `System`, `Developer`, `User`, and `Assistant` are supported and are sent as OpenAI-style roles. `Note` and `Reasoning` blocks are local annotations that remain in the Markdown file and are never sent to the model, including during automatic title generation. `Reasoning` is used for provider-returned reasoning summaries when selected.
 
+Every role marker may be plain or an ATX Markdown heading from level 1 through 6. For example, `--- Assistant ---`, `# --- Assistant ---`, and `## --- Assistant ---` are equivalent when read. Newly written markers use `--header-level`, then `[textllm].header_level`, then `$TEXTLLM_DEFAULT_HEADER_LEVEL`, in that precedence order. Existing markers are not rewritten, so a file may safely contain mixed levels.
+
 ```text
 --- System ---
 
@@ -200,9 +205,9 @@ A private reminder for the human reader. This is not sent to the model.
 A provider-returned reasoning summary. This is not sent to the model.
 ```
 
-Generally, you want the final block to be the new `User` question, but it does not have to be if `--no-require-user-prompt` is used. A new `--- User ---` heading will be added after the last response.
+Generally, you want the final block to be the new `User` question, but it does not have to be if `--no-require-user-prompt` is used. A new `User` role marker will be added after the last response.
 
-Role markers such as `--- User ---` and `--- Assistant ---` are reserved syntax when they appear at the start of a line. In normal assistant responses this is unlikely to matter, but if a response literally includes one of these markers, textllm may interpret it as a new conversation block on the next run. Prefix the marker with a backslash, for example `\--- User ---`, when you want it treated as ordinary text.
+Role markers such as `--- User ---` and `## --- Assistant ---` are reserved syntax when they appear at the start of a line. In normal assistant responses this is unlikely to matter, but if a response literally includes one of these markers, textllm may interpret it as a new conversation block on the next run. Prefix the entire marker with a backslash, for example `\--- User ---` or `\## --- Assistant ---`, when you want it treated as ordinary text.
 
 ## Tips and Tricks
 

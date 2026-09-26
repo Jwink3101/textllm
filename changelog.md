@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.1 (2026-09-26)
+
+- Stream provider-returned reasoning into local-only `Reasoning` blocks in event order, allowing reasoning and assistant blocks to alternate while keeping standard output answer-only.
+- Accept role separators as level 1 through 6 Markdown headings and add `[textllm].header_level`, `$TEXTLLM_DEFAULT_HEADER_LEVEL`, and the overriding `--header-level` CLI option for newly written markers.
+
 ## 0.10.0 (2026-09-13)
 
 - Added local-only `--- Reasoning ---` blocks and use them for selected provider-returned reasoning summaries. The `reasoning_summary = "block"` selector replaces `reasoning_summary = "note"`.

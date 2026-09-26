@@ -14,6 +14,7 @@ Set the defaults in the environment or an env file:
 ```dotenv
 TEXTLLM_DEFAULT_MODEL=openai/gpt-4o-mini
 TEXTLLM_DEFAULT_TEMPERATURE=0.2
+TEXTLLM_DEFAULT_HEADER_LEVEL=2
 TEXTLLM_TEMPLATE_FILE=templates/code-review.md
 ```
 
@@ -35,6 +36,8 @@ You are a concise code reviewer. Focus on correctness, regressions, and missing 
 ````
 
 When a new conversation is created from this template, the conversation file will not contain `model` or `temperature`. At call time, textllm merges the built-in defaults underneath the conversation settings, so `TEXTLLM_DEFAULT_MODEL` and `TEXTLLM_DEFAULT_TEMPERATURE` are used.
+
+`TEXTLLM_DEFAULT_HEADER_LEVEL` is also resolved at call time. It controls newly appended role markers unless the conversation sets `[textllm].header_level` or the invocation uses `--header-level`. Unlike model and temperature, the header level is local behavior and is not a template placeholder.
 
 ## Fill the Default Model into the File
 

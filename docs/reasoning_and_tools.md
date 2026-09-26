@@ -75,10 +75,12 @@ reasoning_summary = "block"
 `reasoning_summary` accepts:
 
 - `omit`, the default, which does not retain the summary.
-- `block`, which appends it in a local-only `--- Reasoning ---` block.
+- `block`, which writes it to local-only `--- Reasoning ---` blocks in stream-event order.
 - `stderr`, which logs it when the selected CLI verbosity displays informational logs.
 
 These are summaries intentionally returned by the provider. textllm does not request or persist raw hidden chain-of-thought.
+
+With `block`, reasoning and answer deltas are persisted as they arrive. A stream can therefore produce `Reasoning`, `Assistant`, `Reasoning`, and `Assistant` blocks in sequence. Reasoning remains excluded from later requests, while assistant segments separated by reasoning are merged into one model-facing assistant message on replay. Only assistant text is streamed to standard output.
 
 ### OpenRouter Responses
 
@@ -126,7 +128,7 @@ reasoning_summary = "block"
 
 Do not combine an adaptive `thinking` object with `budget_tokens`. Effort belongs in `output_config`, not in `thinking`. Model support and valid effort levels vary, and thinking consumes the same `max_tokens` output allowance as answer text.
 
-Anthropic sends thinking content in `thinking_delta` stream events. textllm treats provider-returned thinking text as its normalized reasoning-summary stream: `omit` discards it, `stderr` logs it, and `block` writes it to a local-only `Reasoning` block. This is content deliberately exposed by the provider, not access to unreturned hidden chain-of-thought. The reasoning block is excluded from later requests, and textllm does not preserve Anthropic thinking signatures or build a client-side tool loop.
+Anthropic sends thinking content in `thinking_delta` stream events. textllm treats provider-returned thinking text as its normalized reasoning-summary stream: `omit` discards it, `stderr` logs it, and `block` writes it to local-only `Reasoning` blocks in event order. This is content deliberately exposed by the provider, not access to unreturned hidden chain-of-thought. Reasoning blocks are excluded from later requests, and textllm does not preserve Anthropic thinking signatures or build a client-side tool loop.
 
 The Markdown request is adapted to the Messages shape before any-llm is called:
 
