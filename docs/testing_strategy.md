@@ -24,7 +24,7 @@ Backend mocks are useful for targeted tests of OpenAI-style chunk parsing, but t
 
 The fake returns small deterministic responses derived from the actual messages it receives:
 
-- Title generation returns `title set automatically`.
+- Title generation returns `title set automatically`. The fake title path omits history; dedicated request-construction tests disable that shortcut and verify native user/assistant history, replacement of original system/developer instructions, a final user title request, and exclusion of local-only blocks.
 - Template override tests can request the fixed response `hello` through their system prompt.
 - Normal chat responses report the number of user messages and the last word of the latest user text.
 - Image responses report how many image blocks reached the fake model.
@@ -38,7 +38,7 @@ These responses are intentionally simple. They are not meant to simulate model r
 
 textllm always calls the model through a streaming path. Chat responses are printed to stdout while response chunks are also written to the conversation file. Title generation also uses the streaming path, but suppresses stdout and file streaming so title chunks do not mix with the user-visible answer or conversation body.
 
-The fake streams yield deterministic answer chunks so all three backends exercise chunk accumulation, stdout streaming, and file streaming. Responses and Messages tests additionally exercise non-answer event handling, event-ordered local-only reasoning blocks, and source-list finalization. A targeted interleaved stream verifies `Reasoning`, `Assistant`, `Reasoning`, `Assistant` persistence, answer-only standard output, reasoning filtering, and assistant-segment merging on replay. Other targeted backend mocks verify provider usage fields, nested usage merging, completion requests for streamed usage, and token reports sent to stderr or local-only notes. Output blocks are written lazily on the first matching event; tests cover normal streaming and failures or empty streams before any output is emitted. There is no non-streaming CLI mode.
+The fake streams yield deterministic answer chunks so all three backends exercise chunk accumulation, stdout streaming, and file streaming. Responses and Messages tests additionally exercise non-answer event handling, event-ordered local-only reasoning blocks, and source-list finalization. A targeted interleaved stream verifies `Reasoning`, `Assistant`, `Reasoning`, `Assistant` persistence, answer-only standard output, reasoning filtering, and assistant-segment merging on replay. Other targeted backend mocks verify provider usage fields, nested usage merging, completion requests for streamed usage, and token reports sent to stderr or local-only notes. Output blocks are written lazily on the first matching event; tests cover normal streaming and failures or empty streams before any output is emitted. Console logging tests cover interruptions mid-line, chunks ending in a newline, consecutive status records, and suppressed logs; only an emitted console record interrupting an unfinished line adds a newline, without changing response content. There is no non-streaming CLI mode.
 
 ## Subprocess Tests
 
@@ -58,6 +58,8 @@ Avoid assertions such as "the model says the image is blue" in the default suite
 
 ## Named Templates
 
+Template rendering checks cover ordinary placeholder substitution, double-brace escapes that preserve literal placeholder names in TOML comments, and unchanged unknown placeholders.
+
 Use temporary directories and isolated environment settings so personal registrations and discovered dotenv files cannot affect named-template checks. Verify explicit registrations take precedence over immediate `.md` directory entries, including broken overrides that must not silently fall back. Cover case-sensitive names, invalid selectors, spaces and symbols in paths, symlinks, nonrecursive discovery, literal `./@name` paths, named defaults, and existing placeholder/header behavior.
 
 Exercise the existing environment-loading order and python-dotenv `${VAR}` expansion with controlled environment files. Confirm later directory changes do not retroactively expand earlier registrations. Template failures must not create a conversation file; existing conversations must not resolve unused template selectors. Listing checks cover paths, sources, shadowed entries, empty collections, broken entries, invalid directories, and exit statuses. Include fresh-interpreter subprocess checks with `TEXTLLM_TEST_MODE=1`; listing must not invoke models, read stdin, launch an editor, or create conversations.
@@ -65,6 +67,10 @@ Exercise the existing environment-loading order and python-dotenv `${VAR}` expan
 ## Attachment Tests
 
 Attachment tests should assert that inline and reference-style `@attach` links become file blocks, their optional descriptions remain text, their reference definitions are not model text, and local paths resolve relative to the conversation file. Include tests should assert that `@include` links read local UTF-8 text after a labelled delimiter and reject binary or remote sources. Test completion, Responses, and Messages conversion independently. Include a follow-up request to confirm that an attachment or include in an earlier user message remains in replayed context. Avoid live-provider assertions about document contents or model-specific file support.
+
+## Optional Temperature
+
+Verify omitted temperature stays absent from chat and automatic-title requests across completion, Responses, and Messages backends even when `TEXTLLM_DEFAULT_TEMPERATURE` is set; explicit temperatures must still pass through.
 
 ## Live Provider Checks
 

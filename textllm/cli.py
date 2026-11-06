@@ -8,6 +8,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .output import ConsoleHandler
 from . import config
 from ._version import __version__
 from .config import (
@@ -192,7 +193,7 @@ def cli(argv=None):
         "%(asctime)s:%(levelname)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    console_handler = logging.StreamHandler()
+    console_handler = ConsoleHandler()
     console_handler.setFormatter(fmt)
     console_handler.setLevel(levels[level_index])
 

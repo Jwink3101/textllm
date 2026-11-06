@@ -2,9 +2,9 @@
 
 `TEXTLLM_TEMPLATE_FILE` selects the template used when textllm creates a new conversation, using a file path or `@name`. `--template` overrides it. Before writing the new conversation file, textllm fills a small set of placeholders from the current environment-backed defaults.
 
-Default model and temperature also come from the environment when the conversation does not set them. In practice, this gives you two useful patterns:
+A missing model comes from the environment at call time. Temperature is optional: when omitted, no temperature parameter is sent, including for title generation and all backends. Models that reject temperature require it to be omitted.
 
-- Omit `model` or `temperature` from the template to inherit the current environment default at call time.
+- Omit `model` to inherit the current environment default at call time. Omit `temperature` to use provider defaults.
 - Put `{model}` or `{temperature}` in the template to write the current environment default into each new conversation file.
 
 ## Named Templates
@@ -80,7 +80,7 @@ Then make the template omit those settings:
 # !!AUTO TITLE!!
 
 ```toml
-# model and temperature are inherited from the environment defaults.
+# model is inherited; temperature is omitted from API requests.
 ```
 
 --- System ---
@@ -91,7 +91,7 @@ You are a concise code reviewer. Focus on correctness, regressions, and missing 
 
 ````
 
-When a new conversation is created from this template, the conversation file will not contain `model` or `temperature`. At call time, textllm merges the built-in defaults underneath the conversation settings, so `TEXTLLM_DEFAULT_MODEL` and `TEXTLLM_DEFAULT_TEMPERATURE` are used.
+When a new conversation is created from this template, the conversation file will not contain `model` or `temperature`. At call time, textllm uses `TEXTLLM_DEFAULT_MODEL` and sends no temperature parameter. `TEXTLLM_DEFAULT_TEMPERATURE` only fills the `{temperature}` placeholder; the built-in template includes that placeholder, so remove or comment out its temperature line for models that reject it.
 
 `TEXTLLM_DEFAULT_HEADER_LEVEL` controls newly appended role markers unless the conversation sets `[textllm].header_level` or the invocation uses `--header-level`. It also controls initial markers in the built-in template. In the explicit template above, the initial markers stay plain because they do not use `{header}`. To apply the environment default to those markers too, use the pattern below.
 
@@ -141,6 +141,8 @@ You are a concise code reviewer. Focus on correctness, regressions, and missing 
 ````
 
 The supported placeholders are `{AUTO_TITLE}`, `{header}`, `{model}`, `{temperature}`, `{now}`, and `{version}`. `{model!r}` is also supported if you want Python-style quoting like the built-in template uses.
+
+Double the braces around a supported placeholder to write it literally: `{{temperature}}` renders as `{temperature}`. For example, `temperature = {temperature} # {{temperature}}` fills the setting while preserving the placeholder name in the comment. Escaped placeholders are not substituted again during the same render; unknown placeholders remain unchanged.
 
 ## Override the Default Model
 

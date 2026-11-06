@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.3 (2026-11-06)
+
+- Add optional web-search and prompt-caching example templates for OpenAI, Anthropic, and OpenRouter, with selection and provider setup guidance.
+- Support double-brace escapes for literal template placeholders, so `{{temperature}}` renders as `{temperature}` in generated conversations.
+- Keep console logs, including web-search status updates, on their own line when they interrupt streamed output, without adding unnecessary blank lines.
+- Stop injecting a default temperature into conversations that omit it, across all backends and automatic titles. `TEXTLLM_DEFAULT_TEMPERATURE` still fills template placeholders for new conversations; remove or comment out the temperature setting for models that reject it.
+- Generate automatic titles from native user/assistant history with dedicated title instructions and a final title request, replacing the original system/developer instructions.
+
 ## 0.10.2 (2026-11-06)
 
 User Facing:

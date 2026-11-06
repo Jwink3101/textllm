@@ -1,7 +1,6 @@
 """Conversation lifecycle, model calls, and streamed Markdown updates."""
 
 import base64
-import json
 import mimetypes
 import os
 import re
@@ -19,6 +18,7 @@ from .backends import (
     iter_model_events,
 )
 from .config import AUTO_TITLE, CONFIG, TITLE_SYSTEM_PROMPT, _test_mode_enabled, log
+from .output import StreamOutput
 from .files import clean_filepath, title2filename, uniqueify_filepath
 from .markdown import (
     LOCAL_ONLY_ROLES,
@@ -132,69 +132,70 @@ class Conversation:
         model = settings.pop("model")  # Will KeyError if not set as expected
         log.debug(f"{model = }")
 
-        content = []
-        reasoning_summary = []
-        citations = []
-        usage_metadata = None
-        last_tool_status = None
-        if print_stream:
-            print("\n", end="", flush=True)
-        for event in iter_model_events(
-            backend=backend,
-            model=model,
-            messages=messages,
-            settings=settings,
-        ):
-            if event.kind == "output_text_delta":
-                content.append(event.text)
-                if print_stream:
-                    print(event.text, end="", flush=True)
-                if stream_writer:
-                    stream_writer.write(event.text)
-                    stream_writer.flush()
-            elif event.kind == "reasoning_summary_delta":
-                reasoning_summary.append(event.text)
-                if (
-                    reasoning_summary_mode == "block"
-                    and stream_writer
-                    and hasattr(stream_writer, "write_reasoning")
-                ):
-                    stream_writer.write_reasoning(event.text)
-                    stream_writer.flush()
-            elif event.kind == "citation":
-                citations.append(event.data)
-            elif event.kind == "usage":
-                usage_metadata = _merge_usage(usage_metadata, event.data)
-            elif event.kind == "tool_status":
-                if event.data != last_tool_status:
-                    log.info(f"Web search {event.data}")
-                    last_tool_status = event.data
-            elif event.kind == "error":
-                error = _object_get(event.data, "error", event.data)
-                response = _object_get(event.data, "response")
-                if response is not None:
-                    error = _object_get(response, "error") or _object_get(
-                        response, "incomplete_details", error
-                    )
-                message = _object_get(error, "message") or _object_get(
-                    error, "reason", error
-                )
-                raise RuntimeError(f"Model response failed: {message}")
-
-        response_text = "".join(content)
-        if not response_text:
-            raise ValueError("Model stream did not include text content")
-
-        sources = _sources_markdown(citations)
-        if sources:
-            content.append(sources)
+        with StreamOutput(print_stream) as output:
+            content = []
+            reasoning_summary = []
+            citations = []
+            usage_metadata = None
+            last_tool_status = None
             if print_stream:
-                print(sources, end="", flush=True)
-            if stream_writer:
-                stream_writer.write(sources)
-                stream_writer.flush()
-        if print_stream:
-            print("\n\n", end="", flush=True)
+                output.write("\n")
+            for event in iter_model_events(
+                backend=backend,
+                model=model,
+                messages=messages,
+                settings=settings,
+            ):
+                if event.kind == "output_text_delta":
+                    content.append(event.text)
+                    if print_stream:
+                        output.write(event.text)
+                    if stream_writer:
+                        stream_writer.write(event.text)
+                        stream_writer.flush()
+                elif event.kind == "reasoning_summary_delta":
+                    reasoning_summary.append(event.text)
+                    if (
+                        reasoning_summary_mode == "block"
+                        and stream_writer
+                        and hasattr(stream_writer, "write_reasoning")
+                    ):
+                        stream_writer.write_reasoning(event.text)
+                        stream_writer.flush()
+                elif event.kind == "citation":
+                    citations.append(event.data)
+                elif event.kind == "usage":
+                    usage_metadata = _merge_usage(usage_metadata, event.data)
+                elif event.kind == "tool_status":
+                    if event.data != last_tool_status:
+                        log.info(f"Web search {event.data}")
+                        last_tool_status = event.data
+                elif event.kind == "error":
+                    error = _object_get(event.data, "error", event.data)
+                    response = _object_get(event.data, "response")
+                    if response is not None:
+                        error = _object_get(response, "error") or _object_get(
+                            response, "incomplete_details", error
+                        )
+                    message = _object_get(error, "message") or _object_get(
+                        error, "reason", error
+                    )
+                    raise RuntimeError(f"Model response failed: {message}")
+
+            response_text = "".join(content)
+            if not response_text:
+                raise ValueError("Model stream did not include text content")
+
+            sources = _sources_markdown(citations)
+            if sources:
+                content.append(sources)
+                if print_stream:
+                    output.write(sources)
+                if stream_writer:
+                    stream_writer.write(sources)
+                    stream_writer.flush()
+            if print_stream:
+                output.write("\n\n")
 
         response_text = "".join(content)
 
@@ -354,15 +355,16 @@ class Conversation:
         title_conversation = [
             item
             for item in self.parsed["conversation"]
-            if item["role"] not in LOCAL_ONLY_ROLES
+            if item["role"] in {"user", "assistant"}
         ]
         new = [
             {"role": "system", "content": TITLE_SYSTEM_PROMPT},
-            {"role": "user", "content": json.dumps(title_conversation)},
+            *title_conversation,
+            {"role": "user", "content": "Generate a title for the conversation above."},
         ]
 
         if _test_mode_enabled():  # For testing, I don't want to provide this
-            del new[1]
+            new = new[:1]
 
         response = self.call_llm(messages=new, title_call=True)
         title = response.content
@@ -375,9 +377,8 @@ class Conversation:
 
     @cached_property
     def settings(self):
-        """dict: Conversation settings merged onto template defaults."""
-        defaults = Conversation.read_settings(CONFIG.TEMPLATE)
-        return defaults | self.parsed["settings"]
+        """dict: Conversation settings with a fallback model only."""
+        return {"model": CONFIG.TEXTLLM_DEFAULT_MODEL} | self.parsed["settings"]
 
     read_settings = staticmethod(read_settings)
 

@@ -73,13 +73,15 @@ Most behavior is governed by command-line flags but there are a few exceptions.
 | `$TEXTLLM_ENV_PATH` | Path to an environment file for API keys. They can also just be set directly. |
 | `$TEXTLLM_EDITOR` | Set the editor for the `--edit` flag. Will fall back to `$EDITOR` and then `vi`. |
 | `$TEXTLLM_DEFAULT_MODEL` | Sets the default model if one is not specified and writes it into templates for new chats. |
-| `$TEXTLLM_DEFAULT_TEMPERATURE` | Sets the default temperature if one is not specified and writes it into templates for new chats. |
+| `$TEXTLLM_DEFAULT_TEMPERATURE` | Fills `{temperature}` in templates for new chats; omitted conversation settings are not sent to the provider. |
 | `$TEXTLLM_DEFAULT_HEADER_LEVEL` | Sets the default heading level for newly written role markers when the file does not set `[textllm].header_level`. Use `0` through `6`; the default is `0`. |
 | `$TEXTLLM_TEMPLATE_FILE` | Selects a template path or `@name` for new chats. Overridden by `--template`; does not supply runtime defaults to existing conversations. |
 | `$TEXTLLM_TEMPLATE_DIR` | Directory whose immediate `.md` files define named templates. |
 | `$TEXTLLM_NAMED_TEMPLATE_<name>` | Registers a template file path as `@name`, overriding a same-named directory entry. |
 
 These can be set before calling textllm or via an environment file, either `.env` or with the `--env` flag. The file can also be specified with `$TEXTLLM_ENV_PATH` except for itself of course. Template selection goes from `--template`, then `$TEXTLLM_TEMPLATE_FILE` from the current environment or loaded environment files, then the built-in default.
+
+Ready-to-use web and prompt-caching templates for OpenAI, Anthropic, and OpenRouter are available in [Example Templates](examples/README.md).
 
 Templates can also be selected by name. Set `TEXTLLM_TEMPLATE_DIR` to a directory of Markdown templates, or register individual files with `TEXTLLM_NAMED_TEMPLATE_<name>`:
 
@@ -95,7 +97,7 @@ textllm --list-templates
 
 An explicit registration wins over a same-named directory template. `TEXTLLM_TEMPLATE_FILE=@special` selects a named default. A selector beginning with `@` is always a name; use `./@special` for a literal filename starting with `@`. See [Named Templates](docs/template_defaults.md#named-templates) for discovery, precedence, and environment expansion details.
 
-For custom templates that should follow environment defaults for different models, either omit `model` and `temperature` from the template settings or use placeholders such as `{model}` and `{temperature}`. To use `$TEXTLLM_DEFAULT_HEADER_LEVEL` for the template's initial role markers, write `{header}--- System ---` and `{header}--- User ---`. For example, `TEXTLLM_DEFAULT_HEADER_LEVEL=2` renders these as `## --- System ---` and `## --- User ---`, unless `[textllm].header_level` or `--header-level` overrides it. See [Template Defaults and Environment Variables](docs/template_defaults.md) for examples.
+For custom templates that should follow environment defaults for different models, omit `model` to use the current default at call time, or use placeholders such as `{model}` and `{temperature}` to record defaults in new files. Omit `temperature` to let the provider choose its default; this is required for models that reject that parameter. To use `$TEXTLLM_DEFAULT_HEADER_LEVEL` for the template's initial role markers, write `{header}--- System ---` and `{header}--- User ---`. For example, `TEXTLLM_DEFAULT_HEADER_LEVEL=2` renders these as `## --- System ---` and `## --- User ---`, unless `[textllm].header_level` or `--header-level` overrides it. See [Template Defaults and Environment Variables](docs/template_defaults.md) for examples.
 
 ### API Environment Variables and Loading
 
@@ -195,7 +197,7 @@ Generally, this is only set once, but if `!!AUTO TITLE!!` is added back to the f
 
 ### (2) Settings
 
-Specify settings in [TOML][toml] format inside a Markdown fenced code block. Settings are passed to any-llm except for `model`, which selects the provider and model, and the reserved `[textllm]` table, which controls textllm behavior. The template settings are the default and conversation settings update them.
+Specify settings in [TOML][toml] format inside a Markdown fenced code block. Settings are passed to any-llm except for `model`, which selects the provider and model, and the reserved `[textllm]` table, which controls textllm behavior. A missing `model` uses the environment default. Other provider parameters, including `temperature`, are sent only when present in the conversation settings.
 
 Note that providers require API keys. Keys can be passed through settings when any-llm supports that, but environment variables or an environment file are usually better.
 
@@ -280,6 +282,7 @@ If using `--edit` to edit the file before submitting, it can be useful to open a
 - [Testing strategy](docs/testing_strategy.md)
 - [Reasoning models and tools](docs/reasoning_and_tools.md)
 - [Prompt caching](docs/prompt_caching.md)
+- [Custom API endpoints (`api_base`)](docs/api_base.md)
 - [Manual tests](docs/manual_tests.md)
 
 Architecture and format details are in the [developer documentation](docs/development/README.md). Unimplemented ideas are kept separately in [proposed designs](docs/proposals/README.md).

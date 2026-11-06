@@ -51,6 +51,18 @@ Do not deviate from this instruction under ANY circumstances!
 config.TEST_MODE = True
 
 
+def test_template_literal_placeholders(monkeypatch):
+    monkeypatch.setenv("TEXTLLM_DEFAULT_TEMPERATURE", "0.25")
+    monkeypatch.setenv("TEXTLLM_DEFAULT_MODEL", "example/model")
+    template = 'temperature = {temperature} # {{temperature}}\nmodel = {model!r}'
+    assert config.CONFIG.render_template(template) == (
+        'temperature = 0.25 # {temperature}\nmodel = \'example/model\''
+    )
+    assert config.CONFIG.render_template(
+        "{{model!r}} {{header}} {unknown} {{unknown}}"
+    ) == "{model!r} {header} {unknown} {{unknown}}"
+
+
 def test_package_public_api():
     from textllm.files import file_edit
     from textllm.markdown import loads
@@ -733,12 +745,45 @@ def test_local_only_blocks_are_never_sent_to_model(monkeypatch):
 
         monkeypatch.setattr(conversation, "_test_mode_enabled", lambda: False)
         convo.set_title()
-        assert [message["role"] for message in calls[-1]] == ["system", "user"]
+        assert calls[-1] == [
+            {"role": "system", "content": conversation.TITLE_SYSTEM_PROMPT},
+            {"role": "user", "content": "User prompt"},
+            {"role": "user", "content": "Generate a title for the conversation above."},
+        ]
         assert "private" not in repr(calls[-1])
-        title_conversation = json.loads(calls[-1][1]["content"])
-        assert [item["role"] for item in title_conversation] == ["system", "user"]
     finally:
         clean()
+
+
+def test_title_uses_native_history_and_replaces_original_instructions(tmp_path, monkeypatch):
+    path = tmp_path / "conversation.md"
+    path.write_text("# !!AUTO TITLE!!\n\n--- User ---\n\nQuestion")
+    convo = textllm.Conversation(path)
+    history = [
+        {"role": "system", "content": "Original system instructions"},
+        {"role": "developer", "content": "Original developer instructions"},
+        {"role": "user", "content": "First question"},
+        {"role": "assistant", "content": "First answer"},
+        {"role": "user", "content": "Follow-up question"},
+        {"role": "assistant", "content": "Follow-up answer"},
+    ]
+    convo.parsed["conversation"] = history
+    calls = []
+
+    def fake_call(*, messages, title_call):
+        calls.append((messages, title_call))
+        return backends.LLMResponse("Conversation title")
+
+    monkeypatch.setattr(conversation, "_test_mode_enabled", lambda: False)
+    monkeypatch.setattr(convo, "call_llm", fake_call)
+    convo.set_title()
+
+    assert calls == [([
+        {"role": "system", "content": conversation.TITLE_SYSTEM_PROMPT},
+        *history[2:],
+        {"role": "user", "content": "Generate a title for the conversation above."},
+    ], True)]
+    assert path.read_text() == "# Conversation title\n\n--- User ---\n\nQuestion"
 
 
 def test_chunk_helpers_and_multimodal_merge():
@@ -1372,7 +1417,7 @@ def test_title_call_disables_tools_and_uses_title_settings(monkeypatch):
             convo.set_title()
 
         assert calls == [
-            ("responses", {"temperature": 0.01, "reasoning": {"effort": "low"}})
+            ("responses", {"reasoning": {"effort": "low"}})
         ]
         assert "Token usage:" not in cap.err
         assert path.read_text().startswith("# Safe title")
@@ -2296,3 +2341,67 @@ if __name__ == "__main__":
     # test_default_settings()
     # test_images()
     test_dynamic_env()
+
+
+@pytest.mark.parametrize("backend", ["completion", "responses", "messages"])
+@pytest.mark.parametrize("temperature", [None, 0.4])
+def test_optional_temperature_reaches_chat_and_title(tmp_path, monkeypatch, backend, temperature):
+    monkeypatch.setenv("TEXTLLM_DEFAULT_TEMPERATURE", "0.75")
+    monkeypatch.setenv("TEXTLLM_DEFAULT_MODEL", "openai/test-model")
+    path = tmp_path / "conversation with spaces.md"
+    setting = "# temperature = 0.75" if temperature is None else f"temperature = {temperature}"
+    path.write_text(
+        f'# !!AUTO TITLE!!\n\n```toml\n{setting}\n'
+        f'[textllm]\nbackend = "{backend}"\n```\n\n--- User ---\n\nHello'
+    )
+    convo = textllm.Conversation(path)
+    calls = []
+
+    def fake_events(**kwargs):
+        calls.append(kwargs)
+        yield textllm.ModelEvent("output_text_delta", text="Answer")
+        yield textllm.ModelEvent("completed")
+
+    monkeypatch.setattr(conversation, "iter_model_events", fake_events)
+    convo.call_llm(convo.messages)
+    convo.set_title()
+    assert len(calls) == 2
+    for call in calls:
+        assert call["backend"] == backend
+        assert call["model"] == "openai/test-model"
+        assert call["settings"] == ({} if temperature is None else {"temperature": temperature})
+
+
+@pytest.mark.parametrize("chunk", ["partial", "complete\n", ""])
+@pytest.mark.parametrize("visible", [True, False])
+def test_console_logging_during_stream(monkeypatch, chunk, visible):
+    import logging
+    from textllm.output import ConsoleHandler
+
+    terminal = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", terminal)
+    handler = ConsoleHandler(terminal)
+    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    handler.setLevel(logging.INFO if visible else logging.WARNING)
+    monkeypatch.setattr(config.log, "handlers", [handler])
+    monkeypatch.setattr(config.log, "level", logging.DEBUG)
+    monkeypatch.setattr(config.log, "propagate", False)
+
+    convo = object.__new__(textllm.Conversation)
+    convo.settings = {"model": "fake"}
+
+    def events(**kwargs):
+        if chunk:
+            yield textllm.ModelEvent("output_text_delta", text=chunk)
+        yield textllm.ModelEvent("tool_status", data="searching")
+        yield textllm.ModelEvent("tool_status", data="completed")
+        yield textllm.ModelEvent("output_text_delta", text="answer")
+
+    monkeypatch.setattr(conversation, "iter_model_events", events)
+    response = convo.call_llm([], print_stream=True)
+    separator = "\n" if chunk and not chunk.endswith("\n") else ""
+    logs = "INFO: Web search searching\nINFO: Web search completed\n"
+    assert terminal.getvalue() == (
+        "\n" + chunk + (separator + logs if visible else "") + "answer\n\n"
+    )
+    assert response.content == chunk + "answer"

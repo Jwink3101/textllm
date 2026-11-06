@@ -12,6 +12,8 @@ Reasoning models may reject sampling settings such as `temperature`. Remove sett
 
 Provider-side prompt caching can reduce the cost and latency of replaying long, unchanged context. Configuration, cache-preserving conversation structure, usage fields, and provider-specific limitations are documented in [Prompt Caching](prompt_caching.md).
 
+Ready-to-use reasoning-only templates for OpenAI, Anthropic, and OpenRouter are listed in [Example Templates](../examples/README.md#reasoning-examples). For endpoint overrides, see [Custom API Endpoints](api_base.md).
+
 ## Completion Reasoning
 
 The completion backend accepts any-llm's normalized `reasoning_effort` setting for providers that advertise completion reasoning. The model performs reasoning, but textllm stores only its final text because the completion adapter does not persist provider thinking content. With any-llm 1.27.0, OpenAI reasoning should use the Responses backend described below.
