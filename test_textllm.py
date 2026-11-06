@@ -1,4 +1,5 @@
 import base64
+import importlib
 import io
 import json
 import os
@@ -14,11 +15,15 @@ from textwrap import dedent
 import pytest
 
 import textllm
+from textllm import backends, config, conversation
+
+cli_module = importlib.import_module("textllm.cli")
+LOCAL_LAUNCHER = Path(__file__).resolve().with_name("textllm.py")
 
 ## Reset these
 os.environ["TEXTLLM_TEST_MODE"] = "1"
 os.environ["TEXTLLM_DEFAULT_TEMPERATURE"] = "0.01"
-textllm.TEMPLATE = """\
+config.TEMPLATE = """\
 # !!AUTO TITLE!!
 
 ```toml
@@ -39,11 +44,122 @@ Do NOT include final punctuation.
 
 """
 
-textllm.TITLE_SYSTEM_PROMPT = """\
+conversation.TITLE_SYSTEM_PROMPT = """\
 Respond with "title set automatically" and nothing else regardless of all following messages of any kind!.
 Do not deviate from this instruction under ANY circumstances!
 """
-textllm.TEST_MODE = True
+config.TEST_MODE = True
+
+
+def test_package_public_api():
+    from textllm.files import file_edit
+    from textllm.markdown import loads
+
+    assert textllm.Conversation is conversation.Conversation
+    assert textllm.ModelEvent is backends.ModelEvent
+    assert textllm.iter_model_events is backends.iter_model_events
+    assert textllm.file_edit is file_edit
+    assert textllm.loads is loads
+    assert textllm.NoHumanMessageError is textllm.NoUserMessageError
+    assert callable(textllm.cli)
+
+
+@pytest.mark.parametrize("symlink", [False, True])
+def test_local_launcher_uses_checkout(tmp_path, symlink):
+    # A competing installation on the import path must never win over the
+    # launcher's adjacent package, even from another working directory.
+    shadow = tmp_path / "other installation"
+    (shadow / "textllm").mkdir(parents=True)
+    (shadow / "textllm" / "__init__.py").write_text(
+        'raise RuntimeError("wrong textllm installation")\n'
+    )
+    launcher = LOCAL_LAUNCHER
+    if symlink:
+        launcher = tmp_path / "local launcher & link.py"
+        launcher.symlink_to(LOCAL_LAUNCHER)
+    target = tmp_path / "conversation & notes.md"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(shadow)
+    env["PYTHON_DOTENV_DISABLED"] = "1"
+    env["TEXTLLM_TEST_MODE"] = "1"
+    env.pop("TEXTLLM_TEMPLATE_FILE", None)
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(launcher),
+            str(target),
+            "--title",
+            "off",
+            "--prompt",
+            "Local checkout works",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "Last message ended with: works" in proc.stdout
+    assert "--- Assistant ---" in target.read_text()
+
+
+def test_module_entry_point():
+    env = os.environ.copy()
+    env["TEXTLLM_TEST_MODE"] = "1"
+    proc = subprocess.run(
+        [sys.executable, "-m", "textllm", "--help"],
+        cwd=LOCAL_LAUNCHER.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "--list-templates" in proc.stdout
+
+
+def test_package_wins_over_launcher():
+    # Check fresh import resolution without relying on pytest's cached imports.
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; import textllm; "
+            "import importlib; "
+            "assert Path(textllm.__file__).resolve() == "
+            "Path('textllm/__init__.py').resolve(); "
+            "assert textllm.__path__; "
+            "assert importlib.import_module('textllm.cli').cli is textllm.cli",
+        ],
+        cwd=LOCAL_LAUNCHER.parent,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_importing_launcher_has_no_side_effects():
+    original_path = sys.path.copy()
+    spec = importlib.util.spec_from_file_location("local_launcher", LOCAL_LAUNCHER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert sys.path == original_path
+
+
+def test_detached_launcher_does_not_use_installed_version(tmp_path):
+    launcher = tmp_path / "textllm.py"
+    shutil.copy2(LOCAL_LAUNCHER, launcher)
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(LOCAL_LAUNCHER.parent)
+    proc = subprocess.run(
+        [sys.executable, str(launcher), "--help"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode != 0
+    assert "requires the adjacent textllm package" in proc.stderr
+    assert "Traceback" not in proc.stderr
 
 
 class Capture:
@@ -416,7 +532,10 @@ def test_attachments():
         spaced_text = textllm.Conversation("testdir/spaced-inline.md").messages[0][
             "content"
         ][0]["text"]
-        assert "--- Included file: notes with spaces.txt ---\n\nSpaced note." in spaced_text
+        assert (
+            "--- Included file: notes with spaces.txt ---\n\nSpaced note."
+            in spaced_text
+        )
 
         Path("testdir/parentheses.md").write_text(
             "--- User ---\n\nRead [@attach final report](docs/report (final).pdf).\n"
@@ -601,7 +720,7 @@ def test_local_only_blocks_are_never_sent_to_model(monkeypatch):
             calls.append(messages)
             yield "response", None
 
-        monkeypatch.setattr(textllm, "iter_completion_text", fake_stream)
+        monkeypatch.setattr(backends, "iter_completion_text", fake_stream)
         convo.call_llm(
             convo.messages
             + [
@@ -612,7 +731,7 @@ def test_local_only_blocks_are_never_sent_to_model(monkeypatch):
         assert [message["role"] for message in calls[-1]] == ["system", "user"]
         assert "private" not in repr(calls[-1])
 
-        monkeypatch.setattr(textllm, "_test_mode_enabled", lambda: False)
+        monkeypatch.setattr(conversation, "_test_mode_enabled", lambda: False)
         convo.set_title()
         assert [message["role"] for message in calls[-1]] == ["system", "user"]
         assert "private" not in repr(calls[-1])
@@ -634,14 +753,14 @@ def test_chunk_helpers_and_multimodal_merge():
         usage = {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
 
     assert (
-        textllm._chunk_text({"choices": [{"delta": {"content": "dict text"}}]})
+        backends._chunk_text({"choices": [{"delta": {"content": "dict text"}}]})
         == "dict text"
     )
-    assert textllm._chunk_text({"choices": [{"delta": {}}]}) == ""
-    assert textllm._chunk_text(Chunk()) == "object text"
-    assert textllm._chunk_text(object()) == ""
-    assert textllm._chunk_usage({"usage": {"total_tokens": 3}}) == {"total_tokens": 3}
-    assert textllm._chunk_usage(Chunk()) == {
+    assert backends._chunk_text({"choices": [{"delta": {}}]}) == ""
+    assert backends._chunk_text(Chunk()) == "object text"
+    assert backends._chunk_text(object()) == ""
+    assert backends._chunk_usage({"usage": {"total_tokens": 3}}) == {"total_tokens": 3}
+    assert backends._chunk_usage(Chunk()) == {
         "prompt_tokens": 1,
         "completion_tokens": 2,
         "total_tokens": 3,
@@ -679,7 +798,7 @@ def test_chunk_helpers_and_multimodal_merge():
         {"type": "text", "text": "Two"},
     ]
 
-    assert textllm._responses_messages(merged) == [
+    assert backends._responses_messages(merged) == [
         {
             "role": "user",
             "content": [
@@ -688,7 +807,7 @@ def test_chunk_helpers_and_multimodal_merge():
             ],
         }
     ]
-    assert textllm._responses_messages(
+    assert backends._responses_messages(
         [
             {
                 "role": "user",
@@ -796,28 +915,28 @@ def test_responses_events(monkeypatch):
     assert calls[0]["model"] == "anthropic/claude-sonnet-4.6"
 
     assert (
-        textllm._web_search_output_item_status(
+        backends._web_search_output_item_status(
             "response.output_item.added",
             {"item": {"type": "server_tool_call", "name": "openrouter:web_search"}},
         )
         == "in_progress"
     )
     assert (
-        textllm._web_search_output_item_status(
+        backends._web_search_output_item_status(
             "response.output_item.done",
             {"item": {"type": "openrouter:web_search"}},
         )
         == "completed"
     )
     assert (
-        textllm._web_search_output_item_status(
+        backends._web_search_output_item_status(
             "response.output_item.done",
             {"item": {"type": "message"}},
         )
         is None
     )
 
-    assert textllm._sources_markdown(
+    assert backends._sources_markdown(
         [
             {"title": "One [source]", "url": "https://example.com/a path"},
             {"title": "Duplicate", "url": "https://example.com/a path"},
@@ -826,7 +945,7 @@ def test_responses_events(monkeypatch):
 
 
 def test_messages_request_conversion():
-    system, messages = textllm._messages_request(
+    system, messages = backends._messages_request(
         [
             {"role": "system", "content": "System instruction"},
             {"role": "developer", "content": "Developer instruction"},
@@ -874,10 +993,10 @@ def test_messages_request_conversion():
         }
     ]
     with pytest.raises(ValueError, match="base64 image data"):
-        textllm._messages_image_block(
+        backends._messages_image_block(
             {"type": "image_url", "image_url": {"url": "data:image/png,raw"}}
         )
-    assert textllm._messages_attachment_block(
+    assert backends._messages_attachment_block(
         {
             "type": "file",
             "file": {
@@ -894,7 +1013,7 @@ def test_messages_request_conversion():
         },
     }
     with pytest.raises(ValueError, match="non-empty file data"):
-        textllm._messages_attachment_block({"type": "file", "file": {}})
+        backends._messages_attachment_block({"type": "file", "file": {}})
 
 
 def test_messages_events(monkeypatch):
@@ -1051,7 +1170,7 @@ def test_responses_error_event_raises(monkeypatch):
                 data={"error": {"message": "provider unavailable"}},
             )
 
-        monkeypatch.setattr(textllm, "iter_model_events", fake_events)
+        monkeypatch.setattr(conversation, "iter_model_events", fake_events)
         with pytest.raises(RuntimeError, match="provider unavailable"):
             convo.chat()
         assert "--- Assistant ---" not in path.read_text()
@@ -1178,7 +1297,7 @@ def test_reasoning_and_assistant_blocks_follow_event_order(monkeypatch):
             yield textllm.ModelEvent("output_text_delta", text="Answer two.")
             yield textllm.ModelEvent("completed")
 
-        monkeypatch.setattr(textllm, "iter_model_events", fake_events)
+        monkeypatch.setattr(conversation, "iter_model_events", fake_events)
         with Capture() as cap:
             convo = textllm.Conversation(path)
             convo.chat()
@@ -1248,7 +1367,7 @@ def test_title_call_disables_tools_and_uses_title_settings(monkeypatch):
             yield textllm.ModelEvent("usage", data={"total_tokens": 99})
             yield textllm.ModelEvent("completed")
 
-        monkeypatch.setattr(textllm, "iter_model_events", fake_events)
+        monkeypatch.setattr(conversation, "iter_model_events", fake_events)
         with Capture() as cap:
             convo.set_title()
 
@@ -1262,7 +1381,7 @@ def test_title_call_disables_tools_and_uses_title_settings(monkeypatch):
 
 
 def test_token_usage_format_and_nested_merge():
-    usage = textllm._merge_usage(
+    usage = backends._merge_usage(
         {
             "input_tokens": 8,
             "input_tokens_details": {"cached_tokens": 3},
@@ -1282,7 +1401,7 @@ def test_token_usage_format_and_nested_merge():
         "output_tokens_details": {"reasoning_tokens": 4},
         "total_tokens": 13,
     }
-    assert textllm._format_token_usage(usage) == dedent("""
+    assert backends._format_token_usage(usage) == dedent("""
         Token usage:
 
         - input_tokens: 8
@@ -1331,7 +1450,7 @@ def test_token_usage_stderr_note_and_completion_request(monkeypatch):
             )
             yield textllm.ModelEvent("completed")
 
-        monkeypatch.setattr(textllm, "iter_model_events", fake_events)
+        monkeypatch.setattr(conversation, "iter_model_events", fake_events)
         with Capture() as cap:
             convo.chat()
 
@@ -1405,7 +1524,7 @@ def test_call_llm_usage_and_empty_stream(monkeypatch):
         def fake_stream(*, model, messages, settings):
             yield "hi", {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
 
-        monkeypatch.setattr(textllm, "iter_completion_text", fake_stream)
+        monkeypatch.setattr(backends, "iter_completion_text", fake_stream)
         response = convo.call_llm(convo.messages)
         assert response.content == "hi"
         assert response.usage_metadata["total_tokens"] == 3
@@ -1414,7 +1533,7 @@ def test_call_llm_usage_and_empty_stream(monkeypatch):
             if False:
                 yield None
 
-        monkeypatch.setattr(textllm, "iter_completion_text", empty_stream)
+        monkeypatch.setattr(backends, "iter_completion_text", empty_stream)
         with pytest.raises(ValueError, match="did not include text"):
             convo.call_llm(convo.messages)
     finally:
@@ -1448,7 +1567,7 @@ def test_chat_streams_chunks_to_file(monkeypatch):
             yield "second", None
             yield "\n--- User ---", None
 
-        monkeypatch.setattr(textllm, "iter_completion_text", fake_stream)
+        monkeypatch.setattr(backends, "iter_completion_text", fake_stream)
 
         with Capture() as cap:
             convo.chat()
@@ -1484,7 +1603,7 @@ def test_chat_does_not_write_assistant_block_before_first_chunk(monkeypatch):
             raise RuntimeError("provider failed")
             yield
 
-        monkeypatch.setattr(textllm, "iter_completion_text", failing_stream)
+        monkeypatch.setattr(backends, "iter_completion_text", failing_stream)
 
         with pytest.raises(RuntimeError, match="provider failed"):
             convo.chat()
@@ -1518,7 +1637,7 @@ def test_chat_does_not_write_assistant_block_for_empty_stream(monkeypatch):
             if False:
                 yield None
 
-        monkeypatch.setattr(textllm, "iter_completion_text", empty_stream)
+        monkeypatch.setattr(backends, "iter_completion_text", empty_stream)
 
         with pytest.raises(ValueError, match="did not include text"):
             convo.chat()
@@ -1609,7 +1728,7 @@ def test_iter_completion_text_uses_any_llm_provider_model(monkeypatch):
     fake_any_llm.completion = fake_completion
     monkeypatch.setitem(sys.modules, "any_llm", fake_any_llm)
     monkeypatch.setenv("TEXTLLM_TEST_MODE", "0")
-    monkeypatch.setattr(textllm, "TEST_MODE", False)
+    monkeypatch.setattr(config, "TEST_MODE", False)
 
     chunks = list(
         textllm.iter_completion_text(
@@ -1697,9 +1816,7 @@ def test_parser_edges_and_image_code_blocks():
 def test_role_markers_can_be_markdown_headings():
     without_preamble = textllm.loads("### --- User ---\n\nHello")
     assert without_preamble["title"] == ""
-    assert without_preamble["conversation"] == [
-        {"role": "user", "content": "Hello"}
-    ]
+    assert without_preamble["conversation"] == [{"role": "user", "content": "Hello"}]
 
     parsed = textllm.loads(dedent(r"""
             # Conversation title
@@ -1825,6 +1942,61 @@ def test_header_level_environment_and_env_file(tmp_path, monkeypatch):
     assert "#### --- Assistant ---" in env_file_path.read_text()
 
 
+def test_header_level_applies_to_new_conversation_templates(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEXTLLM_DEFAULT_HEADER_LEVEL", "0")
+
+    builtin_path = tmp_path / "builtin.md"
+    run_cli([str(builtin_path), "--header-level", "2"])
+    builtin_text = builtin_path.read_text()
+    assert "## --- System ---" in builtin_text
+    assert "## --- User ---" in builtin_text
+
+    literal_template = tmp_path / "literal-template.md"
+    literal_template.write_text("# Literal\n\n--- User ---\n")
+    literal_path = tmp_path / "literal.md"
+    run_cli(
+        [
+            str(literal_path),
+            "--template",
+            str(literal_template),
+            "--header-level",
+            "3",
+        ]
+    )
+    assert "--- User ---" in literal_path.read_text()
+    assert "### --- User ---" not in literal_path.read_text()
+
+    placeholder_template = tmp_path / "placeholder-template.md"
+    placeholder_template.write_text("# Placeholder\n\n{header}--- User ---\n")
+    placeholder_path = tmp_path / "placeholder.md"
+    run_cli(
+        [
+            str(placeholder_path),
+            "--template",
+            str(placeholder_template),
+            "--header-level",
+            "3",
+        ]
+    )
+    assert "### --- User ---" in placeholder_path.read_text()
+
+    configured_template = tmp_path / "configured-template.md"
+    configured_template.write_text(
+        "# Configured\n\n```toml\n[textllm]\nheader_level = 4\n```\n\n"
+        "{header}--- User ---\n"
+    )
+    configured_path = tmp_path / "configured.md"
+    run_cli([str(configured_path), "--template", str(configured_template)])
+    assert "#### --- User ---" in configured_path.read_text()
+
+    env_path = tmp_path / "header.env"
+    env_path.write_text("TEXTLLM_DEFAULT_HEADER_LEVEL=5")
+    env_builtin_path = tmp_path / "env-builtin.md"
+    run_cli([str(env_builtin_path), "--env", str(env_path)])
+    assert "##### --- System ---" in env_builtin_path.read_text()
+    assert "##### --- User ---" in env_builtin_path.read_text()
+
+
 def test_stdin_prompt_joining_and_empty_prompt_file_edit():
     clean()
     try:
@@ -1856,6 +2028,201 @@ def test_stdin_prompt_joining_and_empty_prompt_file_edit():
         assert not textllm.file_edit("testdir/empty.md", prompt="", editor=False)
     finally:
         clean()
+
+
+@pytest.fixture
+def template_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(os, "environ", os.environ.copy())
+    for key in list(os.environ):
+        if key.startswith("TEXTLLM_NAMED_TEMPLATE_") or key in {
+            "TEXTLLM_TEMPLATE_FILE",
+            "TEXTLLM_TEMPLATE_DIR",
+            "TEXTLLM_ENV_PATH",
+        }:
+            monkeypatch.delenv(key)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_module, "load_dotenv", lambda *args, **kwargs: False)
+    return tmp_path
+
+
+def test_named_template_precedence_and_rendering(template_env, monkeypatch):
+    directory = template_env / "templates"
+    directory.mkdir()
+    (directory / "openai.md").write_text("# Directory\n\n--- User ---\n")
+    registered = template_env / "custom $ template.md"
+    registered.write_text(
+        "# Registered\n\n```toml\n[textllm]\nheader_level = 2\n```\n"
+        "\n{header}--- User ---\n"
+    )
+    monkeypatch.setenv("TEXTLLM_TEMPLATE_DIR", str(directory))
+    monkeypatch.setenv("TEXTLLM_NAMED_TEMPLATE_openai", str(registered))
+    monkeypatch.setenv("TEXTLLM_TEMPLATE_FILE", "@openai")
+    textllm.cli(["default.md"])
+    assert "# Registered" in Path("default.md").read_text()
+    assert "## --- User ---" in Path("default.md").read_text()
+
+    textllm.cli(["cli.md", "--template", "@openai", "--header-level", "3"])
+    assert "### --- User ---" in Path("cli.md").read_text()
+    monkeypatch.delenv("TEXTLLM_NAMED_TEMPLATE_openai")
+    textllm.cli(["directory.md", "--template", "@openai"])
+    assert Path("directory.md").read_text().startswith("# Directory")
+    Path("@openai").write_text("# Literal\n\n--- User ---\n")
+    textllm.cli(["literal.md", "--template", "./@openai"])
+    assert Path("literal.md").read_text().startswith("# Literal")
+
+
+@pytest.mark.parametrize(
+    "name", ["", ".", "..", "../openai", "sub/openai", "sub\\openai", "OPENAI"]
+)
+def test_named_template_invalid_or_unknown(template_env, monkeypatch, name):
+    monkeypatch.setenv("TEXTLLM_NAMED_TEMPLATE_openai", "unused.md")
+    with pytest.raises(ValueError, match="template"):
+        textllm.cli(["new.md", "--template", "@" + name])
+    assert not Path("new.md").exists()
+
+
+@pytest.mark.parametrize("value", ["", "missing.md", "templates", "binary.md"])
+def test_named_template_broken_override(template_env, monkeypatch, value):
+    Path("templates").mkdir()
+    Path("templates/openai.md").write_text("# Fallback\n")
+    Path("binary.md").write_bytes(b"\xff")
+    monkeypatch.setenv("TEXTLLM_TEMPLATE_DIR", "templates")
+    monkeypatch.setenv("TEXTLLM_NAMED_TEMPLATE_openai", value)
+    with pytest.raises(ValueError, match="TEXTLLM_NAMED_TEMPLATE_openai"):
+        textllm.cli(["nested/new.md", "--template", "@openai"])
+    assert not Path("nested/new.md").exists()
+
+
+def test_named_template_listing(template_env, monkeypatch, capsys):
+    Path("templates").mkdir()
+    for name in [
+        "openai.md",
+        "writing help.md",
+        "cash $ (notes).md",
+        ".hidden.md",
+        "upper.MD",
+    ]:
+        Path("templates", name).write_text("# Template\n")
+    Path("templates/sub").mkdir()
+    Path("templates/sub/nested.md").write_text("# Nested\n")
+    Path("templates/folder.md").mkdir()
+    Path("templates/link.md").symlink_to("openai.md")
+    Path("override.md").write_text("# Override\n")
+    monkeypatch.setenv("TEXTLLM_TEMPLATE_DIR", "templates")
+    monkeypatch.setenv("TEXTLLM_NAMED_TEMPLATE_openai", "override.md")
+    textllm.cli(["--list-templates", "--stdin", "--edit"])
+    out = capsys.readouterr().out
+    assert '"@openai" -> "override.md" [TEXTLLM_NAMED_TEMPLATE_openai]' in out
+    assert 'overrides "templates/openai.md"' in out
+    assert '"@link"' in out
+    assert '"@writing help"' in out
+    assert '"@cash $ (notes)"' in out
+    assert not any(name in out for name in ["hidden", "nested", "upper", "folder"])
+    assert not Path(textllm.DEFAULT_FILEPATH).exists()
+    assert not Path("log").exists()
+    textllm.cli(["spaces.md", "--template", "@writing help"])
+    assert Path("spaces.md").read_text() == "# Template\n"
+
+
+def test_named_template_listing_errors_and_empty(template_env, monkeypatch, capsys):
+    textllm.cli(["--list-templates"])
+    assert "No named templates configured" in capsys.readouterr().out
+    Path("valid.md").write_text("# Valid\n")
+    monkeypatch.setenv("TEXTLLM_NAMED_TEMPLATE_valid", "valid.md")
+    monkeypatch.setenv("TEXTLLM_NAMED_TEMPLATE_broken", "missing.md")
+    monkeypatch.setenv("TEXTLLM_NAMED_TEMPLATE_empty", "")
+    monkeypatch.setenv("TEXTLLM_TEMPLATE_DIR", "missing-directory")
+    with pytest.raises(SystemExit) as exc:
+        textllm.cli(["--list-templates"])
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert '"@valid"' in captured.out
+    assert "TEXTLLM_TEMPLATE_DIR" in captured.err
+    assert "TEXTLLM_NAMED_TEMPLATE_broken" in captured.err
+    assert "TEXTLLM_NAMED_TEMPLATE_empty" in captured.err
+    # An invalid discovery directory does not prevent explicit selection.
+    textllm.cli(["new.md", "--template", "@valid"])
+    textllm.cli(["direct.md", "--template", "valid.md"])
+    textllm.cli(["builtin.md"])
+
+
+def test_named_template_existing_conversation_ignores_lookup(template_env, monkeypatch):
+    monkeypatch.setenv("TEXTLLM_TEMPLATE_DIR", "missing-directory")
+    Path("existing.md").write_text("# Existing\n\n--- User ---\n\nhello\n")
+    textllm.cli(["existing.md", "--template", "@missing", "--title", "off"])
+    assert "--- Assistant ---" in Path("existing.md").read_text()
+
+
+def test_named_template_dotenv_loading(template_env, monkeypatch):
+    from dotenv import load_dotenv
+    import dotenv.main
+
+    monkeypatch.setattr(cli_module, "load_dotenv", load_dotenv)
+    monkeypatch.setattr(dotenv.main, "find_dotenv", lambda: str(template_env / ".env"))
+    Path("templates").mkdir()
+    Path("templates/expanded.md").write_text("# Expanded\n\n--- User ---\n")
+    Path("first.env").write_text("TEXTLLM_NAMED_TEMPLATE_special=missing-first.md\n")
+    Path(".env").write_text("TEXTLLM_NAMED_TEMPLATE_special=missing-second.md\n")
+    Path("last.env").write_text(
+        "TEXTLLM_TEMPLATE_DIR=templates\n"
+        "TEXTLLM_NAMED_TEMPLATE_special=${TEXTLLM_TEMPLATE_DIR}/expanded.md\n"
+        "TEXTLLM_TEMPLATE_FILE=@special\n"
+    )
+    monkeypatch.setenv("TEXTLLM_ENV_PATH", "first.env")
+    monkeypatch.setenv("TEXTLLM_NAMED_TEMPLATE_special", "missing-shell.md")
+    Path("direct.md").write_text("# Direct\n")
+    textllm.cli(["precedence.md", "--template", "direct.md"])
+    assert os.environ["TEXTLLM_NAMED_TEMPLATE_special"] == "missing-second.md"
+    textllm.cli(["new.md", "--env", "last.env"])
+    assert Path("new.md").read_text().startswith("# Expanded")
+    # Later changes do not retroactively interpolate earlier registrations.
+    Path("first.env").write_text("")
+    Path(".env").write_text("")
+    Path("later.env").write_text("TEXTLLM_TEMPLATE_DIR=missing-directory\n")
+    textllm.cli(["later.md", "--env", "later.env"])
+    assert Path("later.md").read_text().startswith("# Expanded")
+    assert os.environ["TEXTLLM_NAMED_TEMPLATE_special"] == "templates/expanded.md"
+
+
+def test_named_template_subprocess(template_env):
+    script = str(LOCAL_LAUNCHER)
+    Path("template.md").write_text("# Subprocess\n\n--- User ---\n")
+    Path("templates.env").write_text(
+        "TEXTLLM_NAMED_TEMPLATE_special=template.md\n"
+        "TEXTLLM_TEMPLATE_FILE=@special\n"
+    )
+    env = os.environ.copy()
+    env["TEXTLLM_TEST_MODE"] = "1"
+    env.pop("PYTHON_DOTENV_DISABLED", None)
+    env.pop("TEXTLLM_TEST_OUTPUT_FILE", None)
+    commands = [
+        (["--list-templates"], 0),
+        (["new.md"], 0),
+        (["failed.md", "--template", "@missing"], 1),
+    ]
+    for args, expected_status in commands:
+        proc = subprocess.run(
+            [sys.executable, script, "--env", "templates.env", *args],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == expected_status, proc.stderr
+        if "--list-templates" in args:
+            assert '"@special"' in proc.stdout
+            assert not Path(textllm.DEFAULT_FILEPATH).exists()
+            assert not Path("log").exists()
+    assert Path("new.md").read_text().startswith("# Subprocess")
+    assert not Path("failed.md").exists()
+    Path("templates.env").write_text("TEXTLLM_NAMED_TEMPLATE_broken=missing.md\n")
+    proc = subprocess.run(
+        [sys.executable, script, "--env", "templates.env", "--list-templates"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 1
+    assert "TEXTLLM_NAMED_TEMPLATE_broken" in proc.stderr
 
 
 def test_dynamic_env():

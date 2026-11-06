@@ -29,10 +29,10 @@ Homepage = "https://github.com/Jwink3101/textllm"
 textllm = "textllm:cli"
 
 [tool.setuptools]
-py-modules = ["textllm"]
+packages = ["textllm"]
 
 [tool.setuptools.dynamic]
-version = { attr = "textllm.__version__" }
+version = { attr = "textllm._version.__version__" }
 
 [tool.black]
 target-version = ["py313"]

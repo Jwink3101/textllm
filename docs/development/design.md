@@ -41,6 +41,14 @@ Creating a new file without edit or prompt input stops after writing the templat
 
 ## Core Concepts
 
+### Package Layout
+
+The implementation lives in the `textllm/` package. `config.py` handles environment defaults and template discovery/rendering; `markdown.py` handles role markers, settings parsing, message merging, and file directives; `backends.py` adapts model requests and streams into normalized events. `conversation.py` coordinates model calls with conversation-file updates, `files.py` handles filenames and editor operations, and `cli.py` handles arguments and command orchestration.
+
+`__init__.py` exposes the public API, including `Conversation`, `loads`, model adapters, and `cli`. `__main__.py` supports `python -m textllm`. The root `textllm.py` launcher puts its resolved directory first on the import path so it runs the adjacent checkout even when another version is installed or the working directory differs. Runtime dependencies are still required. `textllm/_version.py` supplies both the runtime version and setuptools metadata.
+
+The launcher changes the import path only when executed, and refuses to run without the adjacent package. Normal `import textllm` selects the package directory, so the root script does not shadow the public API or submodules.
+
 ### Conversation File
 
 The conversation file is the durable source of truth. It contains optional preamble content, optional TOML settings, and Markdown role blocks. The file format is described separately in [format_spec.md](format_spec.md).
@@ -49,9 +57,9 @@ textllm should avoid keeping meaningful state anywhere else. Environment variabl
 
 ### Template
 
-The default template creates a Markdown title line, a TOML settings block, a timestamp note, a system block, and an empty user block. Custom templates can be provided with `$TEXTLLM_TEMPLATE_FILE`.
+The default template creates a Markdown title line, a TOML settings block, a timestamp note, a system block, and an empty user block. Its initial role markers use the effective header level. Custom templates can be provided with `$TEXTLLM_TEMPLATE_FILE`; they opt in to dynamic role-marker headings by placing `{header}` immediately before a separator. Without that placeholder, their literal markers remain unchanged.
 
-Template rendering is intentionally limited. Only documented placeholders are expanded, so ordinary braces in prompts, JSON examples, and Markdown content remain safe.
+Template rendering is intentionally limited. Only documented placeholders are expanded, so ordinary braces in prompts, JSON examples, and Markdown content remain safe. For `{header}`, precedence is the CLI option, the explicit template's `[textllm].header_level`, the environment default, then `0`.
 
 ### Settings
 
@@ -142,7 +150,7 @@ Verbose mode re-raises errors for debugging. Normal mode logs the error and exit
 
 The default test suite must not call live providers. `TEXTLLM_TEST_MODE=1` activates a deterministic fake model at the same boundary used for live streaming. This lets tests assert behavior that matters to textllm without depending on provider availability, account credentials, model behavior, network access, latency, or cost.
 
-The testing strategy is documented in [testing_strategy.md](testing_strategy.md).
+The testing strategy is documented in [testing_strategy.md](../testing_strategy.md).
 
 ## Extension Principles
 

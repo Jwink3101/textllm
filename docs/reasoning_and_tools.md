@@ -72,7 +72,17 @@ backend = "responses"
 reasoning_summary = "block"
 ```
 
-`reasoning_summary` accepts:
+For OpenAI Responses, these settings have separate purposes:
+
+- `reasoning.effort = "high"` controls reasoning effort. It does not request a visible summary.
+- `reasoning.summary = "auto"` requests a reasoning summary from OpenAI. In the example above, this is `summary = "auto"` inside the top-level `reasoning` object.
+- `[textllm].reasoning_summary = "block"` tells textllm to save any returned summary in the conversation file. It does not ask the provider to generate one.
+
+If you see reasoning tokens in the usage report but no `Reasoning` block, check that the top-level setting includes `summary = "auto"`. Reasoning-token counts measure internal model work and do not imply that a summary was requested or returned. textllm can only save summary text actually returned by the provider.
+
+When updating a template, remember that it only affects new conversations. Update the TOML in an existing conversation file to change its settings.
+
+The local `reasoning_summary` setting accepts:
 
 - `omit`, the default, which does not retain the summary.
 - `block`, which writes it to local-only `--- Reasoning ---` blocks in stream-event order.
@@ -230,6 +240,22 @@ reasoning = { effort = "low" }
 ```
 
 Values under `[textllm.title]` override provider settings only for automatic-title generation. Tool settings in that table are also ignored.
+
+You can also select a separate model for titles:
+
+```toml
+model = "openai/gpt-5.5"
+
+[textllm]
+backend = "responses"
+
+[textllm.title]
+model = "openai/gpt-4o-mini"
+```
+
+The title model uses the conversation's backend. Other provider settings are inherited unless overridden, so they must be supported by the title model and its provider. A different provider prefix is allowed when that provider supports the selected backend and the inherited settings.
+
+Overrides replace entire top-level values rather than merging nested objects. In the first example, the title's `reasoning = { effort = "low" }` replaces the conversation's complete `reasoning` object, so `summary = "auto"` is not inherited. Include every nested field you want to retain in the title override.
 
 For a Messages conversation, use native title overrides such as:
 

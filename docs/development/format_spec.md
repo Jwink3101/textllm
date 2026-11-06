@@ -84,7 +84,8 @@ The `[textllm]` table defines local behavior. Supported keys are:
 - `backend`: `completion`, the default, `responses`, or `messages`.
 - `header_level`: an integer from `0` through `6` controlling newly written role markers. `0` writes plain separators; levels `1` through `6` write ATX Markdown headings. The `--header-level` CLI option overrides this setting. When neither is present, `$TEXTLLM_DEFAULT_HEADER_LEVEL` supplies the default and falls back to `0`; it may be loaded from the process environment, `.env`, `$TEXTLLM_ENV_PATH`, or `--env`.
 - `reasoning_summary`: `omit`, the default, `block`, or `stderr`.
-- `title`: a nested table of provider settings that override normal settings during automatic-title generation. Tools are removed from title calls even if specified here.
+- `tokens`: `none`, the default, `stderr`, or `note`. Reports provider-returned usage for the latest successful conversational call to stderr or a local-only `Note` block. The `--tokens` CLI option overrides this setting. Earlier calls and automatic-title usage are excluded; failed or interrupted calls do not produce a report.
+- `title`: a nested table of settings that override normal settings during automatic-title generation, including an optional separate `model`. The conversation's backend is retained. Overrides replace entire top-level values, including nested provider objects such as `reasoning`. Tools are removed from title calls even if specified here. See [Automatic Titles](../reasoning_and_tools.md#automatic-titles) for examples.
 
 The format does not validate provider settings or guarantee that a provider implements the selected backend or feature.
 
@@ -193,6 +194,8 @@ The matching reference definition is metadata and is not sent as model text. An 
 
 An attachment remains in the user message where it appears. Since textllm replays the Markdown conversation for each model call, attachments from prior user turns are sent again on later calls. The selected model backend determines whether it accepts a particular file type.
 
+Local attachments are reread from disk on each invocation. The Markdown stores the reference, not a snapshot of the file contents. Changing the file changes the context sent for its earlier turn; removing the file causes loading to fail.
+
 ### Included Files
 
 `@include` uses the same Markdown syntax but reads a local UTF-8 text file into the user message instead of creating a provider file input:
@@ -205,6 +208,8 @@ An attachment remains in the user message where it appears. Since textllm replay
 ```
 
 The description remains text context. textllm appends the included contents after a labelled delimiter that preserves the filename. URLs and `data:` URLs are not allowed for `@include`; non-UTF-8 files are rejected. Included text is replayed on later calls like any other message text, so keep included files reasonably sized.
+
+As with local attachments, included files are reread on each invocation. Their expanded contents are not persisted in the conversation file, so later requests use the current file contents even for directives in earlier turns.
 
 Assistant messages are persisted as text. Responses and Messages URL citations are appended to the assistant text as a conventional Markdown `### Sources` section. The sources are therefore ordinary assistant content on later turns. Search queries, raw search results, tool call objects, assistant-generated images, thinking signatures, and hidden reasoning data are not persisted.
 

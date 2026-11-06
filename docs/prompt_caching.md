@@ -132,7 +132,7 @@ input_tokens + cache_creation_input_tokens + cache_read_input_tokens
 
 Anthropic's `input_tokens` counts only the input after the final cache breakpoint. When the provider does not return `total_tokens`, textllm currently synthesizes it from `input_tokens + output_tokens`; that synthesized field does not include Anthropic cache-read or cache-creation tokens. Use the individual usage fields above when assessing total context and cache effectiveness.
 
-Token reports cover only the latest conversational model call. They are not accumulated across earlier turns, and automatic-title usage is excluded.
+Token reports cover only the latest successful conversational model call. They are not accumulated across earlier turns, and automatic-title usage is excluded. A failed or interrupted call produces no report, even if usage events arrived before the failure. An absent report therefore does not establish that the provider used no tokens.
 
 ## Privacy and Portability
 
@@ -144,4 +144,4 @@ Do not assume one provider's cache settings work with another provider or backen
 
 - [README models and settings](../readme.md#models-and-settings)
 - [Reasoning models and tools](reasoning_and_tools.md)
-- [File format specification](format_spec.md)
+- [File format specification](development/format_spec.md)

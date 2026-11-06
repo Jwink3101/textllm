@@ -12,6 +12,8 @@ Install from PyPI:
 
 any-llm handles provider integrations. In most cases, install textllm and set the provider API key in the environment.
 
+From a source checkout, run `python textllm.py` to use the local development code whether or not textllm is installed. The launcher also works when called by path from another directory. Runtime dependencies must still be installed. Both the checkout and installed package support `python -m textllm`.
+
 ## Usage
 
 Simply call textllm. If no file is specified, it will create `New Conversation.md` with an incremented filename as needed. If the file does not exist, a template will be written.
@@ -46,7 +48,7 @@ Then modify the system prompt if needed and add your query under the user prompt
 
 textllm will update the title if needed, stream the response to stdout, append the response to the file, and add a new user block ready for the next prompt.
 
-Role separators may also be Markdown headings, such as `## --- User ---`. Set `[textllm].header_level` or `$TEXTLLM_DEFAULT_HEADER_LEVEL` to an integer from `0` through `6` to control newly written role markers; `0`, the default, writes plain separators. The `--header-level {0..6}` option overrides the file and environment settings for one invocation.
+Role separators may also be Markdown headings, such as `## --- User ---`. Set `[textllm].header_level` or `$TEXTLLM_DEFAULT_HEADER_LEVEL` to an integer from `0` through `6` to control newly written role markers; `0`, the default, writes plain separators. The `--header-level {0..6}` option overrides the file and environment settings for one invocation. The built-in template uses the effective level for its initial markers. Explicit templates can opt in with `{header}--- User ---`; templates without `{header}` remain unchanged.
 
 ### Streaming and Prompts
 
@@ -54,7 +56,7 @@ You can use `--prompt` to specify the new prompt and/or `--edit` to open a termi
 
 ## Titles and Names
 
-As noted in "Format Description", the title is the first line. If `!!AUTO TITLE!!` is in the first line, textllm will generate a title for the document using the document settings, including the same model. This can be disabled or the title can be manually set. To regenerate a title, reset the title to `!!AUTO TITLE!!`.
+As noted in "Format Description", the title is the first line. If `!!AUTO TITLE!!` is in the first line, textllm will generate a title for the document using the document settings. By default it uses the conversation model; `[textllm.title]` can override the model and provider settings for titles while keeping the same backend. See [Automatic Titles](docs/reasoning_and_tools.md#automatic-titles) for examples. This can be disabled or the title can be manually set. To regenerate a title, reset the title to `!!AUTO TITLE!!`.
 
 If `--rename` is set, the document will also be renamed from the title. Numbers will be added to avoid conflicts if needed. `--rename` is the default for new files. This means you can do something like:
 
@@ -73,11 +75,27 @@ Most behavior is governed by command-line flags but there are a few exceptions.
 | `$TEXTLLM_DEFAULT_MODEL` | Sets the default model if one is not specified and writes it into templates for new chats. |
 | `$TEXTLLM_DEFAULT_TEMPERATURE` | Sets the default temperature if one is not specified and writes it into templates for new chats. |
 | `$TEXTLLM_DEFAULT_HEADER_LEVEL` | Sets the default heading level for newly written role markers when the file does not set `[textllm].header_level`. Use `0` through `6`; the default is `0`. |
-| `$TEXTLLM_TEMPLATE_FILE` | Sets a file to read for the template. This is used for new chats but not for defaults, and is overridden by `--template`. |
+| `$TEXTLLM_TEMPLATE_FILE` | Selects a template path or `@name` for new chats. Overridden by `--template`; does not supply runtime defaults to existing conversations. |
+| `$TEXTLLM_TEMPLATE_DIR` | Directory whose immediate `.md` files define named templates. |
+| `$TEXTLLM_NAMED_TEMPLATE_<name>` | Registers a template file path as `@name`, overriding a same-named directory entry. |
 
 These can be set before calling textllm or via an environment file, either `.env` or with the `--env` flag. The file can also be specified with `$TEXTLLM_ENV_PATH` except for itself of course. Template selection goes from `--template`, then `$TEXTLLM_TEMPLATE_FILE` from the current environment or loaded environment files, then the built-in default.
 
-For custom templates that should follow environment defaults for different models, either omit `model` and `temperature` from the template settings or use placeholders such as `{model}` and `{temperature}`. See [Template Defaults and Environment Variables](docs/template_defaults.md) for examples.
+Templates can also be selected by name. Set `TEXTLLM_TEMPLATE_DIR` to a directory of Markdown templates, or register individual files with `TEXTLLM_NAMED_TEMPLATE_<name>`:
+
+```dotenv
+TEXTLLM_TEMPLATE_DIR="${HOME}/.config/textllm/templates"
+TEXTLLM_NAMED_TEMPLATE_special="${HOME}/work/custom template.md"
+```
+
+```bash
+textllm --template @special
+textllm --list-templates
+```
+
+An explicit registration wins over a same-named directory template. `TEXTLLM_TEMPLATE_FILE=@special` selects a named default. A selector beginning with `@` is always a name; use `./@special` for a literal filename starting with `@`. See [Named Templates](docs/template_defaults.md#named-templates) for discovery, precedence, and environment expansion details.
+
+For custom templates that should follow environment defaults for different models, either omit `model` and `temperature` from the template settings or use placeholders such as `{model}` and `{temperature}`. To use `$TEXTLLM_DEFAULT_HEADER_LEVEL` for the template's initial role markers, write `{header}--- System ---` and `{header}--- User ---`. For example, `TEXTLLM_DEFAULT_HEADER_LEVEL=2` renders these as `## --- System ---` and `## --- User ---`, unless `[textllm].header_level` or `--header-level` overrides it. See [Template Defaults and Environment Variables](docs/template_defaults.md) for examples.
 
 ### API Environment Variables and Loading
 
@@ -118,7 +136,9 @@ backend = "responses"
 reasoning_summary = "block"
 ```
 
-The answer streams normally. URL citations are appended as a Markdown `Sources` section. With `reasoning_summary = "block"`, provider-supplied reasoning is written in local-only `--- Reasoning ---` blocks in stream-event order. A provider may therefore produce alternating `Reasoning` and `Assistant` blocks. On later calls, the reasoning blocks are omitted and the assistant segments are merged into one model-facing message. Raw hidden reasoning is not stored.
+For OpenAI Responses, requesting and saving a reasoning summary require two separate settings: `summary = "auto"` inside the top-level `reasoning` object requests a summary from OpenAI, and `[textllm].reasoning_summary = "block"` tells textllm to save any returned summary. Setting `effort = "high"` alone enables high reasoning effort without requesting a summary. Reasoning tokens can therefore appear in usage reports even when no summary is returned.
+
+The answer streams to terminal stdout. Returned summaries are saved in local-only `--- Reasoning ---` blocks in the conversation file; they are not printed to stdout. URL citations are appended as a Markdown `Sources` section. Reasoning and answer blocks are written in stream-event order, so a provider may produce alternating `Reasoning` and `Assistant` blocks. On later calls, the reasoning blocks are omitted and the assistant segments are merged into one model-facing message. Summaries are provider-supplied explanations, not the raw hidden reasoning.
 
 Use `--tokens {none,stderr,note}` to report every usage field returned by the provider for the latest conversational model call. Counts are not accumulated across earlier calls, and automatic-title usage is excluded. `stderr` prints the report separately from the streamed answer, while `note` appends it in a local-only `--- Note ---` block. The default is `none`. For persistent behavior, set the same value in the reserved table:
 
@@ -128,6 +148,8 @@ tokens = "note"
 ```
 
 The command-line flag overrides the file setting. Field names are kept as returned by each backend, including nested cached-token, reasoning-token, and provider-specific usage details when available. Because each call sends the current conversation as context, its provider-reported input count normally includes that context. The completion backend requests streamed usage when reporting is enabled; a provider may still omit some or all usage fields. See [Prompt Caching](docs/prompt_caching.md) for OpenAI, Anthropic, and OpenRouter configuration examples and instructions for checking cache hits.
+
+Token reports are written only after the model call completes successfully and returns answer text. Failed or interrupted calls can leave a partial response in the file without a usage report, even if usage events arrived before the failure.
 
 For a native Anthropic Messages reasoning call:
 
@@ -241,6 +263,8 @@ Use `@include` instead for a local UTF-8 text file that should become ordinary p
 
 textllm adds included contents after a clearly labelled delimiter. This works with any model backend, but can use substantial context for large files. `@attachment` remains supported as an alias for `@attach`.
 
+Local attachments and included files are reread from disk on each invocation; their contents are not copied into the conversation file. Editing a referenced file changes the context sent for earlier turns, and deleting it can prevent the conversation from continuing. Keep a separate copy if you need the original contents preserved.
+
 ### Open Vim at Bottom
 
 If using `--edit` to edit the file before submitting, it can be useful to open at the bottom of the file. textllm will correctly handle flags in `$TEXTLLM_EDITOR` so you can do something like:
@@ -251,13 +275,14 @@ If using `--edit` to edit the file before submitting, it can be useful to open a
 
 - [any-llm migration guide](docs/migration_any_llm.md)
 - [LiteLLM migration guide](docs/migration_litellm.md)
-- [File format specification](docs/format_spec.md)
-- [Design](docs/design.md)
+- [Template defaults and environment variables](docs/template_defaults.md)
 - [Roadmap](docs/roadmap.md)
 - [Testing strategy](docs/testing_strategy.md)
 - [Reasoning models and tools](docs/reasoning_and_tools.md)
 - [Prompt caching](docs/prompt_caching.md)
 - [Manual tests](docs/manual_tests.md)
+
+Architecture and format details are in the [developer documentation](docs/development/README.md). Unimplemented ideas are kept separately in [proposed designs](docs/proposals/README.md).
 
 [dotenv]: https://github.com/theskumar/python-dotenv
 [toml]: https://toml.io/

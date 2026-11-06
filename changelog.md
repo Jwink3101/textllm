@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.10.2 (2026-11-06)
+
+User Facing:
+
+- Add named templates through `--template @name`, `TEXTLLM_NAMED_TEMPLATE_<name>`, and `TEXTLLM_TEMPLATE_DIR`, plus `--list-templates` for discovery and validation. `TEXTLLM_TEMPLATE_FILE` also accepts `@name`; literal paths beginning with `@` now need a path prefix such as `./`.
+- Apply the effective header level to the built-in template's initial role markers and add an opt-in `{header}` placeholder for explicit templates.
+
+Backend:
+
+- Split the implementation into focused package modules while preserving public imports and the `textllm` command. Keep root `textllm.py` as a launcher for the local development checkout and add `python -m textllm` support.
+
 ## 0.10.1 (2026-09-26)
 
 - Stream provider-returned reasoning into local-only `Reasoning` blocks in event order, allowing reasoning and assistant blocks to alternate while keeping standard output answer-only.
