@@ -4,6 +4,8 @@ import argparse
 import logging
 import os
 import sys
+import tomllib
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -23,6 +25,13 @@ from .config import (
 from .conversation import Conversation, NoUserMessageError
 from .files import file_edit, uniqueify_filepath
 from .markdown import _set_role_marker_header_level
+from .state import (
+    _conversation_kind,
+    _last_conversation,
+    _remember_conversation,
+    _state_root,
+    _temp_directory,
+)
 
 
 def cli(argv=None):
@@ -42,7 +51,11 @@ def cli(argv=None):
         # formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
-    parser.add_argument(
+    conversation_files = parser.add_argument_group("Conversation Files")
+    settings = parser.add_argument_group("Settings and Templates")
+    response = parser.add_argument_group("Response Settings")
+
+    conversation_files.add_argument(
         "filepath",
         nargs="?",
         default=None,
@@ -54,7 +67,31 @@ def cli(argv=None):
             """,
     )
 
-    parser.add_argument(
+    conversation_files.add_argument(
+        "-c",
+        "--continue",
+        dest="continue_conversation",
+        action="store_true",
+        help="Resume the last conversation, or require an explicit file to exist.",
+    )
+
+    conversation_files.add_argument(
+        "-t",
+        "--temp",
+        action="store_true",
+        help="Store a timestamp-named conversation in temporary storage; ignore --rename.",
+    )
+
+    settings.add_argument(
+        "-o",
+        "--override",
+        action="append",
+        default=[],
+        metavar="TOML",
+        help="Override settings for this invocation; repeat to recursively merge TOML fragments.",
+    )
+
+    settings.add_argument(
         "--env",
         help="""
             Specify an additional environment file to load. Note, %(prog)s will
@@ -62,7 +99,7 @@ def cli(argv=None):
 
             Useful for storing API keys""",
     )
-    parser.add_argument(
+    settings.add_argument(
         "--template",
         help="""
             Specify a template file or @name for new chats. Overrides $TEXTLLM_TEMPLATE_FILE,
@@ -70,13 +107,13 @@ def cli(argv=None):
             """,
     )
 
-    parser.add_argument(
+    settings.add_argument(
         "--list-templates",
         action="store_true",
         help="List named templates, their paths and sources, then exit.",
     )
 
-    parser.add_argument(
+    response.add_argument(
         "--title",
         choices=["auto", "only", "off"],
         default="auto",
@@ -88,7 +125,7 @@ def cli(argv=None):
             """,
     )
 
-    parser.add_argument(
+    response.add_argument(
         "--tokens",
         choices=["none", "stderr", "note"],
         default=None,
@@ -98,7 +135,7 @@ def cli(argv=None):
             """,
     )
 
-    parser.add_argument(
+    response.add_argument(
         "--header-level",
         type=int,
         choices=range(7),
@@ -111,7 +148,7 @@ def cli(argv=None):
             """,
     )
 
-    parser.add_argument(
+    response.add_argument(
         "--require-user-prompt",
         dest="require_user_prompt",
         action=argparse.BooleanOptionalAction,
@@ -122,7 +159,7 @@ def cli(argv=None):
         """,
     )
 
-    parser.add_argument(
+    conversation_files.add_argument(
         "--rename",
         "--move",
         action=argparse.BooleanOptionalAction,
@@ -140,16 +177,8 @@ def cli(argv=None):
         version="%(prog)s-" + __version__,
     )
 
-    verb = parser.add_argument_group("Verbosity Settings:")
-    verb.add_argument(
-        "-q", "--quiet", action="count", default=0, help="Decrease Verbosity"
-    )
-    verb.add_argument(
-        "-v", "--verbose", action="count", default=0, help="Increase Verbosity"
-    )
-
     edit = parser.add_argument_group(
-        title="Edit Settings",
+        title="Prompt and Editor",
         description="""
             These options let you add the prompt and/or edit the file directly
             before calling the LLM. Note it is assumed that a User role marker
@@ -181,7 +210,36 @@ def cli(argv=None):
         """,
     )
 
+    verb = parser.add_argument_group("Verbosity")
+    verb.add_argument(
+        "-q", "--quiet", action="count", default=0, help="Decrease Verbosity"
+    )
+    verb.add_argument(
+        "-v", "--verbose", action="count", default=0, help="Increase Verbosity"
+    )
+
     args = parser.parse_args(argv)
+    overrides = {}
+    for fragment in args.override:
+        try:
+            overrides = config._merge_settings(overrides, tomllib.loads(fragment))
+        except tomllib.TOMLDecodeError as error:
+            parser.error(f"Invalid --override TOML: {error}")
+    local_overrides = overrides.get("textllm", {})
+    if not isinstance(local_overrides, dict):
+        parser.error("--override textllm must be a TOML table")
+    template_header_level = args.header_level
+    if template_header_level is None:
+        template_header_level = local_overrides.get("header_level")
+    if template_header_level is not None:
+        try:
+            config._header_prefix(template_header_level)
+        except ValueError as error:
+            parser.error(str(error))
+    if args.temp and args.filepath is not None:
+        parser.error("--temp cannot be combined with an explicit path")
+    if args.continue_conversation and args.filepath and os.path.isdir(args.filepath):
+        parser.error("--continue requires a file, not a directory")
 
     # Define logging levels
     levels = [logging.ERROR, logging.WARNING, logging.INFO, logging.DEBUG]
@@ -235,7 +293,9 @@ def cli(argv=None):
 
     # Handle default --rename
     if args.rename is None:
-        args.rename = args.filepath is None or os.path.isdir(args.filepath)
+        args.rename = not args.continue_conversation and (
+            args.filepath is None or os.path.isdir(args.filepath)
+        )
         log.debug(f"Settings --rename to {args.rename}.")
 
     # Handle edit modes.
@@ -250,7 +310,19 @@ def cli(argv=None):
     log.debug(f"{edit_mode = }")
 
     try:
-        if args.filepath is None:
+        new_temp = args.temp and not args.continue_conversation
+        if args.continue_conversation:
+            if args.filepath is None:
+                args.filepath = _last_conversation("temp" if args.temp else "regular")
+            elif not os.path.isfile(args.filepath):
+                raise ValueError(f"Cannot continue missing file: {args.filepath!r}")
+            log.info("Continuing %r", args.filepath)
+        if new_temp:
+            temp_timestamp = datetime.now(UTC)
+            args.filepath = str(
+                _temp_directory() / temp_timestamp.strftime("%Y%m%dT%H%M%S.%fZ.md")
+            )
+        elif args.filepath is None:
             args.filepath = uniqueify_filepath(DEFAULT_FILEPATH)
             log.debug(f"No filepath specified. Set {args.filepath!r}")
         elif os.path.isdir(args.filepath):
@@ -259,15 +331,18 @@ def cli(argv=None):
             log.debug(f"Directory specified. Set {args.filepath!r}")
 
         filepath = args.filepath
-        if not os.path.exists(filepath):
+        kind = _conversation_kind(filepath)
+        if kind == "temp":
+            args.rename = False
+        if new_temp or not os.path.exists(filepath):
             template_file = args.template or CONFIG.TEXTLLM_TEMPLATE_FILE
             template_text = (
                 _read_template(template_file) if template_file else config.TEMPLATE
             )
             rendered_template = CONFIG.render_template(
-                template_text, header_level=args.header_level
+                template_text, header_level=template_header_level
             )
-            if args.header_level is None and "{header}" in template_text:
+            if template_header_level is None and "{header}" in template_text:
                 template_settings = Conversation.read_settings(rendered_template).get(
                     "textllm", {}
                 )
@@ -277,32 +352,54 @@ def cli(argv=None):
                     )
             if not template_file:
                 header_level = (
-                    args.header_level
-                    if args.header_level is not None
+                    template_header_level
+                    if template_header_level is not None
                     else CONFIG.TEXTLLM_DEFAULT_HEADER_LEVEL
                 )
                 rendered_template = _set_role_marker_header_level(
                     rendered_template, header_level
                 )
+            if new_temp:
+                _state_root().mkdir(mode=0o700, parents=True, exist_ok=True)
             Path(filepath).parent.mkdir(parents=True, exist_ok=True)
-            with open(filepath, "xt") as fp:
-                fp.write(rendered_template)
+            while True:
+                try:
+                    with open(filepath, "xt") as fp:
+                        fp.write(rendered_template)
+                    break
+                except FileExistsError:
+                    if not new_temp:
+                        raise
+                    # A fixed or coarse clock must not prevent progress.
+                    temp_timestamp = max(
+                        datetime.now(UTC), temp_timestamp + timedelta(microseconds=1)
+                    )
+                    filepath = str(
+                        _temp_directory()
+                        / temp_timestamp.strftime("%Y%m%dT%H%M%S.%fZ.md")
+                    )
+            args.filepath = filepath
             log.info(f"{filepath!r} does not exist. Created template.")
+            _remember_conversation(filepath, kind)
 
             if not edit_mode:
                 return
         else:
             log.debug(f"{filepath!r} exists")
 
+        if kind == "temp":
+            log.info("Temporary conversation: %r", filepath)
+
         if edit_mode and not file_edit(filepath, prompt=args.prompt, editor=args.edit):
             # edit returns True iff it was modified.
             raise ValueError("File not modified")
 
-        convo = Conversation(filepath)
+        convo = Conversation(filepath, overrides=overrides)
 
         if args.title != "off":
             convo.set_title()  # Will do nothing if AUTO_TITLE not in the top line
         if args.title == "only":
+            _remember_conversation(convo.filepath, kind)
             if _test_mode_enabled():
                 return convo
             return
@@ -315,6 +412,8 @@ def cli(argv=None):
 
         if args.rename:
             convo.rename_by_title()
+
+        _remember_conversation(convo.filepath, kind)
 
         if _test_mode_enabled():
             return convo

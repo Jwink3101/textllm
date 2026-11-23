@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import sys
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
@@ -38,6 +39,17 @@ TEMPLATE_PLACEHOLDER_PATTERN = re.compile(
     r"\{(?P<escaped>\{(?:AUTO_TITLE|header|temperature|model|now|version)(?:!r)?\})\}"
     r"|\{(?P<name>AUTO_TITLE|header|temperature|model|now|version)(?P<repr>!r)?\}"
 )
+
+
+def _merge_settings(base, overrides):
+    """Return an independent recursive merge; arrays and other values replace."""
+    merged = deepcopy(base)
+    for key, value in overrides.items():
+        if isinstance(merged.get(key), dict) and isinstance(value, dict):
+            merged[key] = _merge_settings(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
 
 
 def _header_prefix(header_level):

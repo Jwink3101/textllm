@@ -54,6 +54,51 @@ Role separators may also be Markdown headings, such as `## --- User ---`. Set `[
 
 You can use `--prompt` to specify the new prompt and/or `--edit` to open a terminal text editor before running. textllm always streams the response to stdout while also writing response chunks to the conversation file as they arrive.
 
+### Continuing Conversations
+
+Use `textllm -c` or `textllm --continue` to resume the last regular conversation, including after textllm renames it. This selection is global across working directories. Add `--prompt`, `--stdin`, or `--edit` as usual. Without a filename or `--continue`, textllm still creates a new conversation.
+
+`textllm -c file.md` requires that file to exist; plain `textllm file.md` can also create it. If the remembered file was moved or deleted, continuation fails rather than selecting another file. Supply its new filename to establish the remembered path again.
+
+Continuation state uses a small SQLite database in a private user directory under Python's system temporary directory. System cleanup can forget the remembered path without affecting regular conversation files. No state transaction is held during editing or model calls.
+
+### Temporary Conversations
+
+Use `-t` / `--temp` to create a conversation under Python's system temporary directory, with a compact ISO 8601 UTC filename with microsecond precision, such as `20261119T190132.123456Z.md`. `textllm --temp -c` resumes the last temporary conversation; regular and temporary continuation are separate and global across working directories. `--temp` cannot be combined with an explicit filename. Temporary conversations can receive document titles but ignore `--rename` / `--move`, keeping their timestamp filenames.
+
+The path is logged before model calls, including when continuing. Files survive process exit but may be removed by system temporary-file cleanup. To keep a conversation, copy it from the path reported in the logs and then use the permanent copy:
+
+```bash
+textllm --temp --prompt "Explain gravity"
+# Replace this illustrative path with the actual path from the logs.
+cp "/tmp/textllm-1000/conversations/20261119T190132.123456Z.md" "Gravity notes.md"
+textllm "Gravity notes.md" --prompt "How does relativity change this?"
+```
+
+Copying leaves the temporary original available to `--temp -c`. Using the saved copy makes it the last regular conversation. Relative image, include, and attachment paths resolve from the conversation's directory; copy any referenced local assets separately and adjust links as needed.
+
+### Settings Overrides
+
+Use `-o TOML` or `--override TOML` to override settings for one invocation without changing the file's saved TOML. Repeat the option to combine fragments:
+
+```bash
+textllm -c -o 'temperature = 0.3'
+textllm --temp --prompt "Explain gravity" -o 'model = "openai/gpt-5.5"'
+textllm -c -o 'textllm.backend = "responses"' -o 'reasoning.effort = "high"'
+textllm -c -o 'textllm.title.model = "openai/gpt-5.5"'
+```
+
+Settings precedence, from lowest to highest priority:
+
+1. Existing fallback defaults.
+2. Settings saved in the conversation file, including settings supplied by its template.
+3. `-o` / `--override` fragments in command-line order; later fragments win.
+4. Explicit dedicated flags, such as `--tokens` and `--header-level`.
+
+Tables merge recursively, preserving unrelated keys. Arrays and other values replace earlier values; arrays do not concatenate. Each argument must be valid TOML on its own. An invalid fragment fails before the conversation is created or edited. TOML has no null value, and overrides do not support deleting keys.
+
+Overrides apply to both provider parameters and local `[textllm]` settings. They also apply to automatic titles, where `[textllm.title]` retains precedence over shared model settings and tools remain disabled. Override a title-specific setting directly if the file already supplies it. Omit `-o` on the next invocation to return to the saved settings. Storage location and template selection still use their dedicated flags.
+
 ## Titles and Names
 
 As noted in "Format Description", the title is the first line. If `!!AUTO TITLE!!` is in the first line, textllm will generate a title for the document using the document settings. By default it uses the conversation model; `[textllm.title]` can override the model and provider settings for titles while keeping the same backend. See [Automatic Titles](docs/reasoning_and_tools.md#automatic-titles) for examples. This can be disabled or the title can be manually set. To regenerate a title, reset the title to `!!AUTO TITLE!!`.

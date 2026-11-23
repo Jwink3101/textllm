@@ -5,9 +5,12 @@ import json
 import os
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import sys
+import tempfile
 import types
+from datetime import UTC, datetime
 from functools import cached_property
 from pathlib import Path
 from textwrap import dedent
@@ -49,6 +52,517 @@ Respond with "title set automatically" and nothing else regardless of all follow
 Do not deviate from this instruction under ANY circumstances!
 """
 config.TEST_MODE = True
+
+
+@pytest.fixture(autouse=True)
+def isolated_continuation_state(tmp_path, monkeypatch):
+    monkeypatch.setattr(os, "environ", os.environ.copy())
+    monkeypatch.delenv("TEXTLLM_ENV_PATH", raising=False)
+    monkeypatch.delenv("TEXTLLM_DEFAULT_HEADER_LEVEL", raising=False)
+    monkeypatch.setenv("TEXTLLM_EDITOR", os.environ.get("TEXTLLM_EDITOR", "vi"))
+    # Cover both cached tempfile lookups and fresh subprocess interpreters.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("TEMP", str(tmp_path))
+    monkeypatch.setenv("TMP", str(tmp_path))
+
+
+def test_continue_tracks_creation_rename_and_working_directory(tmp_path, monkeypatch):
+    from textllm.state import _last_conversation
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
+    textllm.cli([])
+    created = Path(_last_conversation())
+    assert created.name == "New Conversation.md"
+    convo = textllm.cli(["-c", "--rename", "--prompt", "First question"])
+    assert Path(_last_conversation()) == Path(convo.filepath).absolute()
+    assert Path(convo.filepath).name == "title set automatically.md"
+    assert not created.exists()
+    elsewhere = tmp_path / "other directory"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    convo = textllm.cli(["--continue", "--prompt", "Second question"])
+    assert Path(convo.filepath).parent == tmp_path
+    assert "2 user messages" in Path(convo.filepath).read_text()
+
+
+def test_continue_missing_and_explicit_paths(tmp_path, monkeypatch):
+    from textllm.state import _last_conversation
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
+    with pytest.raises(ValueError, match="No last regular"):
+        textllm.cli(["-c"])
+    target = tmp_path / "notes & questions.md"
+    with pytest.raises(ValueError, match="missing file"):
+        textllm.cli(["-c", str(target)])
+    assert not target.exists()
+    textllm.cli([str(target)])
+    textllm.cli(["-c", str(target), "--prompt", "Hello"])
+    assert _last_conversation() == str(target)
+    target.unlink()
+    with pytest.raises(ValueError, match="is missing"):
+        textllm.cli(["-c"])
+    with pytest.raises(SystemExit):
+        textllm.cli(["-c", str(tmp_path)])
+
+
+def test_continue_subprocess(tmp_path):
+    target = tmp_path / "saved & chat.md"
+    env = os.environ.copy()
+    env["PYTHON_DOTENV_DISABLED"] = "1"
+    env.pop("TEXTLLM_TEMPLATE_FILE", None)
+    for args in (
+        [str(target), "--title", "off", "--prompt", "First"],
+        ["-c", "--title", "off", "--prompt", "Second"],
+    ):
+        proc = subprocess.run(
+            [sys.executable, str(LOCAL_LAUNCHER), *args],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+    assert "2 user messages" in proc.stdout
+
+
+def test_state_concurrent_updates_and_failed_operation(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from textllm.state import _last_conversation, _remember_conversation
+
+    paths = [tmp_path / "regular.md", tmp_path / "temporary.md"]
+    for path in paths:
+        path.write_text("saved")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(
+            pool.map(
+                lambda item: _remember_conversation(*item),
+                zip(paths, ("regular", "temp")),
+            )
+        )
+    assert _last_conversation() == str(paths[0])
+    assert _last_conversation("temp") == str(paths[1])
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
+    broken = tmp_path / "broken.md"
+    broken.write_text("# Broken\n\n--- Assistant ---\n\nNo prompt\n")
+    with pytest.raises(textllm.NoUserMessageError):
+        textllm.cli([str(broken), "--title", "off"])
+    assert _last_conversation() == str(paths[0])
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("failure_type", [PermissionError, sqlite3.OperationalError])
+def test_state_write_failure_preserves_response(
+    tmp_path, monkeypatch, capsys, existing, failure_type
+):
+    from textllm import state
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
+    previous = tmp_path / "previous conversation.md"
+    textllm.cli([str(previous)])
+    target = tmp_path / "response & notes.md"
+    original = "# Saved notes\n\n--- User ---\n\n"
+    if existing:
+        target.write_text(original)
+    capsys.readouterr()
+    connect = state.sqlite3.connect
+
+    def fail_writes(*args, **kwargs):
+        if kwargs.get("uri"):
+            return connect(*args, **kwargs)
+        raise failure_type("state write unavailable")
+
+    monkeypatch.setattr(state.sqlite3, "connect", fail_writes)
+    result = textllm.cli(
+        [str(target), "--title", "off", "--prompt", "Keep this persisted"]
+    )
+    captured = capsys.readouterr()
+    assert result.filepath == str(target)
+    assert "Last message ended with: persisted" in captured.out
+    assert (
+        "WARNING: Could not remember conversation: state write unavailable"
+        in captured.err
+    )
+    saved = target.read_text()
+    assert "Keep this persisted" in saved
+    assert "--- Assistant ---" in saved
+    assert "Last message ended with: persisted" in saved
+    assert saved.endswith("--- User ---  \n\n")
+    if existing:
+        assert saved.startswith(original)
+    assert state._last_conversation() == str(previous)
+
+
+@pytest.mark.parametrize("temporary", [False, True])
+def test_corrupt_state_fails_without_selecting_or_creating_files(tmp_path, temporary):
+    from textllm.state import _state_root, _temp_directory
+
+    _temp_directory().mkdir(parents=True)
+    database = _state_root() / "state.sqlite3"
+    corrupt = b"This is not a SQLite database.\n"
+    database.write_bytes(corrupt)
+    for target in (
+        tmp_path / "latest conversation.md",
+        _temp_directory() / "candidate.md",
+    ):
+        target.write_text("# Saved\n\n--- User ---\n\nOriginal prompt\n")
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*.md")}
+    env = os.environ.copy()
+    env["PYTHON_DOTENV_DISABLED"] = "1"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(LOCAL_LAUNCHER),
+            "-c",
+            *(["-t"] if temporary else []),
+            "--prompt",
+            "Must not append",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode != 0
+    assert "ERROR: file is not a database" in proc.stderr
+    assert "deterministic test" not in proc.stderr
+    assert proc.stdout == ""
+    assert database.read_bytes() == corrupt
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*.md")} == before
+
+
+@pytest.mark.parametrize("continuing", [False, True])
+def test_temp_stream_failure_keeps_logged_path_and_partial_response(
+    tmp_path, monkeypatch, capsys, continuing
+):
+    from textllm.state import _last_conversation, _temp_directory
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
+    regular = tmp_path / "regular.md"
+    textllm.cli([str(regular)])
+    if continuing:
+        textllm.cli(["-t"])
+        previous_temp = _last_conversation("temp")
+    capsys.readouterr()
+    streamed_paths = []
+
+    def failing_events(**kwargs):
+        target = Path(_last_conversation("temp"))
+        streamed_paths.append(target)
+        assert str(target) in capsys.readouterr().err
+        assert "--- Assistant ---" not in target.read_text()
+        yield textllm.ModelEvent("output_text_delta", text="Partial")
+        assert target.read_text().endswith("Partial")
+        yield textllm.ModelEvent("output_text_delta", text=" answer")
+        assert target.read_text().endswith("Partial answer")
+        raise RuntimeError("stream interrupted")
+
+    monkeypatch.setattr(conversation, "iter_model_events", failing_events)
+    with pytest.raises(RuntimeError, match="stream interrupted"):
+        textllm.cli(
+            [
+                "-t",
+                *(["-c"] if continuing else []),
+                "--title",
+                "off",
+                "--prompt",
+                "A recoverable prompt",
+            ]
+        )
+    captured = capsys.readouterr()
+    assert "Partial answer" in captured.out
+    assert "ERROR: stream interrupted" in captured.err
+    (target,) = streamed_paths
+    assert target.parent == _temp_directory()
+    assert _last_conversation("temp") == str(target)
+    assert _last_conversation() == str(regular)
+    if continuing:
+        assert str(target) == previous_temp
+    saved = target.read_text()
+    assert "A recoverable prompt" in saved
+    assert saved.count("--- Assistant ---") == 1
+    assert saved.count("--- User ---") == 1
+    assert saved.endswith("Partial answer")
+
+
+def test_temp_creation_continuation_and_copy(tmp_path, monkeypatch, capsys):
+    from textllm.state import _last_conversation, _temp_directory
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
+    regular = tmp_path / "regular notes.md"
+    textllm.cli([str(regular)])
+    convo = textllm.cli(["--temp", "--rename", "--prompt", "First question"])
+    target = Path(convo.filepath)
+    assert target.parent == _temp_directory()
+    assert datetime.strptime(target.stem, "%Y%m%dT%H%M%S.%fZ").strftime(
+        "%Y%m%dT%H%M%S.%fZ"
+    ) == target.stem
+    assert target.read_text().startswith("# title set automatically")
+    assert str(target) in capsys.readouterr().err
+    assert _last_conversation() == str(regular)
+    assert _last_conversation("temp") == str(target)
+    textllm.cli(["-t", "-c", "--move", "--prompt", "Second question"])
+    assert "2 user messages" in target.read_text()
+    textllm.cli(["-c", str(target), "--rename", "--prompt", "Third question"])
+    assert target.exists()
+    assert _last_conversation() == str(regular)
+    saved = tmp_path / "Kept conversation.md"
+    shutil.copy2(target, saved)
+    textllm.cli([str(saved), "--prompt", "Fourth question"])
+    assert _last_conversation() == str(saved)
+    assert _last_conversation("temp") == str(target)
+
+
+def test_temp_collision_missing_state_and_failures(tmp_path, monkeypatch, capsys):
+    from textllm.state import _last_conversation, _temp_directory
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
+    with pytest.raises(ValueError, match="No last temp"):
+        textllm.cli(["--temp", "-c"])
+    with pytest.raises(SystemExit):
+        textllm.cli(["--temp", "explicit.md"])
+    with pytest.raises(ValueError):
+        textllm.cli(["--temp", "--template", "@unregistered"])
+    assert not _temp_directory().exists()
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz):
+            assert tz is UTC
+            return cls(2026, 11, 19, 19, 1, 32, 123456, tzinfo=tz)
+
+    monkeypatch.setattr(cli_module, "datetime", FixedDatetime)
+    textllm.cli(["--temp"])
+    original = Path(_last_conversation("temp"))
+    assert original.name == "20261119T190132.123456Z.md"
+    original_text = original.read_text()
+
+    def fail_title(self):
+        # The path must already be visible and remembered before a model call.
+        assert _last_conversation("temp").endswith("20261119T190132.123457Z.md")
+        assert "20261119T190132.123457Z.md" in capsys.readouterr().err
+        raise RuntimeError("model failed")
+
+    monkeypatch.setattr(textllm.Conversation, "set_title", fail_title)
+    with pytest.raises(RuntimeError, match="model failed"):
+        textllm.cli(["--temp", "--prompt", "Question"])
+    assert original.read_text() == original_text
+    failed = Path(_last_conversation("temp"))
+    assert failed.exists()
+    failed.unlink()
+    with pytest.raises(ValueError, match="is missing"):
+        textllm.cli(["--temp", "-c"])
+
+
+def test_temp_subprocess(tmp_path):
+    env = os.environ.copy()
+    env["PYTHON_DOTENV_DISABLED"] = "1"
+    env.pop("TEXTLLM_TEMPLATE_FILE", None)
+    for extra in ([], ["-c", "--rename"]):
+        proc = subprocess.run(
+            [sys.executable, str(LOCAL_LAUNCHER), "-t", *extra, "--prompt", "Hello"],
+            cwd=tmp_path, env=env, capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "Temporary conversation:" in proc.stderr
+    assert "2 user messages" in proc.stdout
+    assert not list(tmp_path.glob("*.md"))
+
+
+def test_settings_merge_replaces_arrays_and_preserves_inputs():
+    base = {"nested": {"keep": 1, "replace": [1]}, "scalar": 1, "table": {"a": 2}}
+    override = {"nested": {"replace": [2]}, "scalar": {"b": 3}, "table": False}
+    merged = config._merge_settings(base, override)
+    assert merged == {
+        "nested": {"keep": 1, "replace": [2]},
+        "scalar": {"b": 3},
+        "table": False,
+    }
+    merged["nested"]["replace"].append(3)
+    assert base["nested"]["replace"] == [1]
+    assert override["nested"]["replace"] == [2]
+
+
+@pytest.mark.parametrize("backend", ["completion", "responses", "messages"])
+def test_overrides_share_effective_settings_without_persisting(
+    tmp_path, monkeypatch, backend
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
+    target = tmp_path / "Override & notes.md"
+    target.write_text(
+        '# !!AUTO TITLE!!\n\n```toml\nmodel = "original/model"\ntemperature = 0.8\n'
+        'reasoning = { effort = "low", summary = "auto" }\n'
+        'tools = [{type = "original"}]\ntool_choice = "auto"\n'
+        '[textllm]\nbackend = "completion"\nheader_level = 1\ntokens = "none"\n'
+        '[textllm.title]\nmodel = "original/title"\n'
+        'reasoning = {effort = "minimal"}\n```\n\n--- User ---\n\nQuestion\n'
+    )
+    saved_settings = textllm.Conversation.read_settings(target.read_text())
+    calls = []
+
+    def events(**kwargs):
+        calls.append(kwargs)
+        yield textllm.ModelEvent("reasoning_summary_delta", text="Thinking")
+        yield textllm.ModelEvent("output_text_delta", text="Answer")
+        yield textllm.ModelEvent("usage", data={"input_tokens": 2, "output_tokens": 3})
+        yield textllm.ModelEvent("completed")
+
+    monkeypatch.setattr(conversation, "iter_model_events", events)
+    convo = textllm.cli(
+        [
+            str(target),
+            "-o",
+            'model = "override/chat"',
+            "-o",
+            "temperature = 0.2",
+            "--override",
+            "temperature = 0.4",
+            "-o",
+            'reasoning.effort = "high"',
+            "-o",
+            'tools = [{type = "replacement"}]',
+            "-o",
+            f'textllm.backend = "{backend}"',
+            "-o",
+            "textllm.header_level = 2",
+            "-o",
+            'textllm.tokens = "note"',
+            "-o",
+            'textllm.reasoning_summary = "block"',
+            "-o",
+            'textllm.title.model = "override/title"',
+            "-o",
+            'textllm.title.reasoning.effort = "medium"',
+            "-o",
+            'textllm.title.tools = [{type = "forbidden"}]',
+            "-o",
+            'textllm.title.tool_choice = "required"',
+        ]
+    )
+    title, chat = calls
+    assert title["model"] == "override/title"
+    assert chat["model"] == "override/chat"
+    assert title["settings"]["reasoning"] == {"effort": "medium", "summary": "auto"}
+    assert chat["settings"]["reasoning"] == {"effort": "high", "summary": "auto"}
+    assert chat["settings"]["tools"] == [{"type": "replacement"}]
+    for call in calls:
+        assert call["backend"] == backend
+        assert call["settings"]["temperature"] == 0.4
+        assert "textllm" not in call["settings"]
+    assert "tools" not in title["settings"]
+    assert "tool_choice" not in title["settings"]
+    assert "stream_options" not in title["settings"]
+    text = target.read_text()
+    assert "## --- Reasoning ---" in text
+    assert "## --- Note ---" in text
+    assert "input_tokens: 2" in text
+    assert text.endswith("## --- User ---  \n\n")
+    assert convo.parsed["settings"] == saved_settings
+    assert textllm.Conversation.read_settings(text) == saved_settings
+    textllm.cli([str(target), "--prompt", "Another question"])
+    assert calls[-1]["model"] == "original/model"
+    assert calls[-1]["backend"] == "completion"
+    assert calls[-1]["settings"]["temperature"] == 0.8
+    assert calls[-1]["settings"]["tools"] == [{"type": "original"}]
+    assert target.read_text().endswith("# --- User ---  \n\n")
+
+
+@pytest.mark.parametrize("fragment", ["temperature =", "a = 1\na = 2", "textllm = 3"])
+def test_override_errors_before_mutation(tmp_path, monkeypatch, fragment):
+    from textllm.state import _state_root
+
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "existing.md"
+    target.write_text("# Saved\n\n--- User ---\n\nOriginal\n")
+    for args in ([str(target)], ["new.md"], ["--temp"]):
+        with pytest.raises(SystemExit):
+            textllm.cli([*args, "--prompt", "Must not append", "-o", fragment])
+    assert target.read_text().endswith("Original\n")
+    assert not Path("new.md").exists()
+    assert not _state_root().exists()
+
+
+def test_override_header_and_dedicated_flags(template_env, monkeypatch):
+    def events(**kwargs):
+        yield textllm.ModelEvent("output_text_delta", text="Answer")
+        yield textllm.ModelEvent("usage", data={"input_tokens": 2})
+        yield textllm.ModelEvent("completed")
+
+    monkeypatch.setattr(conversation, "iter_model_events", events)
+    monkeypatch.setenv("TEXTLLM_DEFAULT_HEADER_LEVEL", "5")
+    for name, template in (
+        ("builtin", None),
+        (
+            "placeholder",
+            "# Saved\n\n```toml\n[textllm]\nheader_level = 1\n```\n\n{header}--- User ---\n",
+        ),
+        ("literal", "# Saved\n\n--- User ---\n"),
+    ):
+        extra = []
+        if template is not None:
+            Path("template.md").write_text(template)
+            extra = ["--template", "template.md"]
+        textllm.cli([f"{name}.md", *extra, "-o", "textllm.header_level = 2"])
+        expected = "--- User ---" if name == "literal" else "## --- User ---"
+        assert Path(f"{name}.md").read_text().rstrip().endswith(expected)
+        textllm.cli(
+            [
+                f"{name}.md",
+                "--prompt",
+                "Hello",
+                "--tokens",
+                "none",
+                "--header-level",
+                "3",
+                "-o",
+                "textllm.header_level = 2",
+                "-o",
+                'textllm.tokens = "note"',
+            ]
+        )
+        assert Path(f"{name}.md").read_text().endswith("### --- User ---  \n\n")
+        assert "--- Note ---" not in Path(f"{name}.md").read_text()
+    textllm.cli(["initial.md", "-o", "textllm.header_level = 2", "--header-level", "0"])
+    assert Path("initial.md").read_text().rstrip().endswith("\n--- User ---")
+
+
+def test_override_temp_subprocess(tmp_path):
+    env = os.environ.copy()
+    env["PYTHON_DOTENV_DISABLED"] = "1"
+    env.pop("TEXTLLM_TEMPLATE_FILE", None)
+    for extra in ([], ["-c"]):
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(LOCAL_LAUNCHER),
+                "--temp",
+                *extra,
+                "--prompt",
+                "Hello",
+                "-o",
+                'textllm.backend = "responses"',
+                "-o",
+                "textllm.header_level = 2",
+            ],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+    assert "2 user messages" in proc.stdout
+    from textllm.state import _last_conversation
+
+    assert (
+        Path(_last_conversation("temp")).read_text().endswith("## --- User ---  \n\n")
+    )
 
 
 def test_template_literal_placeholders(monkeypatch):

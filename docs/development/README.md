@@ -5,6 +5,7 @@ These documents describe the current implementation and file-format contract for
 - [Architecture and design](design.md)
 - [File format specification](format_spec.md)
 - [Named templates design](design_named_templates.md)
+- [Continuation, temporary conversations, and settings overrides](continue_temp_overrides.md)
 - [Testing strategy](../testing_strategy.md)
 - [Manual tests](../manual_tests.md)
 

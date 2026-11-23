@@ -42,6 +42,14 @@ The fake streams yield deterministic answer chunks so all three backends exercis
 
 ## Subprocess Tests
 
+Failure checks simulate both filesystem and SQLite state write errors for new and existing conversations, asserting a warning, preserved response, and unchanged earlier pointer. Fresh-process checks with a corrupt SQLite database cover regular and temporary continuation, asserting nonzero exit status, an error, no model output, unchanged candidate files, and no fallback conversation creation. Interrupted temporary streams cover new and continued conversations: verify path reporting before model iteration, flushed chunks before the exception, partial answer preservation without a final user marker, and unchanged regular continuation selection.
+
+Every test isolates continuation state by patching cached `tempfile.tempdir` and setting `TMPDIR`, `TEMP`, and `TMP` to a test directory inherited by subprocesses. Tests must never read or modify personal continuation pointers. Verify global continuation across working directories, explicit existing-file requirements, missing state/targets, template-only creation, rename tracking, failed-operation behavior, concurrent SQLite pointer updates, and continuation in a fresh interpreter.
+
+Use a copied environment for each test and remove inherited `TEXTLLM_ENV_PATH` and `TEXTLLM_DEFAULT_HEADER_LEVEL`. Tests of environment settings supply their own controlled values rather than loading personal configuration.
+
+Temporary conversation checks cover compact ISO 8601 UTC filenames with six fractional digits and trailing `Z`, and filename collisions advancing by one microsecond even with a fixed clock, ignored rename flags, separate regular/temp pointers, explicit managed temporary files, invalid argument combinations, missing targets, and template failures without file creation. Assert that paths are logged and new files remembered before a failing model operation. Copy a temporary file to permanent storage and verify normal continuation selection. Exercise temporary continuation in a fresh subprocess with the same isolated temporary directory.
+
 Some tests run `textllm.py` in a subprocess to verify fresh-interpreter behavior, especially default environment handling. Those subprocesses inherit `TEXTLLM_TEST_MODE=1`, which keeps them deterministic even though they do not inherit Python globals patched in the parent process.
 
 The root launcher must import the adjacent development package even when another installation appears on `PYTHONPATH`, the working directory differs, or the launcher is reached through a symlink. Test those cases with deterministic conversation updates and filenames containing spaces and symbols. Also cover `python -m textllm` and the public package imports. When packaging changes, build a wheel and smoke-test its imports and entry points in isolation from the checkout, without provider calls.
@@ -71,6 +79,12 @@ Attachment tests should assert that inline and reference-style `@attach` links b
 ## Optional Temperature
 
 Verify omitted temperature stays absent from chat and automatic-title requests across completion, Responses, and Messages backends even when `TEXTLLM_DEFAULT_TEMPERATURE` is set; explicit temperatures must still pass through.
+
+## Invocation Settings Overrides
+
+Verify recursive dictionary merging preserves unrelated keys and leaves its inputs independent, while arrays and scalar/table conflicts replace earlier values. Exercise repeated TOML fragments in command-line order and malformed or internally duplicated keys failing before creating or editing files or touching continuation state.
+
+Capture chat and title requests at `textllm.conversation.iter_model_events` for completion, Responses, and Messages. Assert model/temperature overrides, title-specific precedence and tool isolation, array replacement, and exclusion of reserved local settings from provider requests. Verify overridden reasoning blocks, token notes, and role-marker levels use the same effective settings, and a subsequent invocation returns to the saved TOML. Cover dedicated CLI flags winning over `-o`, environment/file/override header precedence, initial built-in and placeholder-enabled template markers, literal template markers, and combined temporary continuation/overrides in fresh subprocesses.
 
 ## Live Provider Checks
 

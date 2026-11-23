@@ -2,7 +2,7 @@
 
 ```toml
 # Optional Settings
-temperature = {temperature} # {{temperature}}
+# temperature = {temperature} # {{temperature}} (commented out for OpenAI)
 model = 'openai/gpt-6.1-sol'
 tools = [{ type = "web_search" }]
 reasoning = { effort = "high"}

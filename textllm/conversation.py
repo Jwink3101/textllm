@@ -17,7 +17,14 @@ from .backends import (
     _sources_markdown,
     iter_model_events,
 )
-from .config import AUTO_TITLE, CONFIG, TITLE_SYSTEM_PROMPT, _test_mode_enabled, log
+from .config import (
+    AUTO_TITLE,
+    CONFIG,
+    TITLE_SYSTEM_PROMPT,
+    _merge_settings,
+    _test_mode_enabled,
+    log,
+)
 from .output import StreamOutput
 from .files import clean_filepath, title2filename, uniqueify_filepath
 from .markdown import (
@@ -45,10 +52,14 @@ class Conversation:
     ----------
     filepath : str or path-like
         Path to a Markdown conversation file in textllm format.
+    overrides : dict, optional
+        Settings recursively merged for this invocation without changing the
+        file's TOML. Arrays and non-dictionary values replace earlier values.
     """
 
-    def __init__(self, filepath):
+    def __init__(self, filepath, *, overrides=None):
         self.filepath = self.filepath0 = filepath
+        self._settings_overrides = _merge_settings({}, overrides or {})
 
         # Read and strip trailing whitespace before parsing.
         with open(self.filepath, "rt") as fp:
@@ -100,7 +111,7 @@ class Conversation:
             if message.get("role") not in LOCAL_ONLY_ROLES
         ]
 
-        settings = self.settings.copy() | new_settings
+        settings = _merge_settings(self.settings, new_settings)
         textllm_settings = settings.pop("textllm", {})
         backend = textllm_settings.get("backend", "completion")
         reasoning_summary_mode = textllm_settings.get("reasoning_summary", "omit")
@@ -119,7 +130,7 @@ class Conversation:
             settings.pop("tools", None)
             settings.pop("tool_choice", None)
             settings.pop("max_tool_calls", None)
-            settings.update(textllm_settings.get("title", {}))
+            settings = _merge_settings(settings, textllm_settings.get("title", {}))
             settings.pop("tools", None)
             settings.pop("tool_choice", None)
             settings.pop("max_tool_calls", None)
@@ -377,8 +388,11 @@ class Conversation:
 
     @cached_property
     def settings(self):
-        """dict: Conversation settings with a fallback model only."""
-        return {"model": CONFIG.TEXTLLM_DEFAULT_MODEL} | self.parsed["settings"]
+        """dict: Effective settings, including invocation overrides and fallback model."""
+        return _merge_settings(
+            {"model": CONFIG.TEXTLLM_DEFAULT_MODEL} | self.parsed["settings"],
+            self._settings_overrides,
+        )
 
     read_settings = staticmethod(read_settings)
 

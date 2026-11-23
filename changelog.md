@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.0 (2026-11-19)
+
+- Add `-c` / `--continue` to resume the last regular conversation across working directories, tracking textllm renames with disposable SQLite state. An explicit filename with `--continue` must already exist.
+- Add `-t` / `--temp` for conversations stored in a private system temporary directory with compact ISO 8601 UTC filenames with microsecond precision, ignoring rename flags. `--temp -c` resumes the last temporary conversation independently of regular chats; paths are logged before model calls so files can be recovered or kept.
+- Add repeatable `-o TOML` / `--override TOML` settings for one invocation, recursively merging tables without a new dependency. Later fragments win, arrays replace, and explicit dedicated flags take precedence. Overrides apply consistently to chat, automatic titles, and local output behavior without rewriting saved TOML.
+- Group `--help` options into conversation files, settings and templates, response settings, prompt and editor, and verbosity sections.
+
 ## 0.10.3 (2026-11-06)
 
 - Add optional web-search and prompt-caching example templates for OpenAI, Anthropic, and OpenRouter, with selection and provider setup guidance.
