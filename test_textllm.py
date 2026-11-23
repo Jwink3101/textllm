@@ -5,7 +5,6 @@ import json
 import os
 import shlex
 import shutil
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -58,6 +57,7 @@ config.TEST_MODE = True
 def isolated_continuation_state(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "environ", os.environ.copy())
     monkeypatch.delenv("TEXTLLM_ENV_PATH", raising=False)
+    monkeypatch.delenv("TEXTLLM_TEMP_DIR", raising=False)
     monkeypatch.delenv("TEXTLLM_DEFAULT_HEADER_LEVEL", raising=False)
     monkeypatch.setenv("TEXTLLM_EDITOR", os.environ.get("TEXTLLM_EDITOR", "vi"))
     # Cover both cached tempfile lookups and fresh subprocess interpreters.
@@ -128,20 +128,20 @@ def test_continue_subprocess(tmp_path):
     assert "2 user messages" in proc.stdout
 
 
-def test_state_concurrent_updates_and_failed_operation(tmp_path, monkeypatch):
-    from concurrent.futures import ThreadPoolExecutor
+def test_state_updates_and_failed_operation(tmp_path, monkeypatch):
     from textllm.state import _last_conversation, _remember_conversation
 
     paths = [tmp_path / "regular.md", tmp_path / "temporary.md"]
     for path in paths:
         path.write_text("saved")
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        list(
-            pool.map(
-                lambda item: _remember_conversation(*item),
-                zip(paths, ("regular", "temp")),
-            )
-        )
+    for path, kind in zip(paths, ("regular", "temp")):
+        _remember_conversation(path, kind)
+    from textllm.state import _state_root
+    saved = (_state_root() / "state.json").read_text()
+    assert saved == json.dumps(
+        {"last_regular": str(paths[0]), "last_temp": str(paths[1])}, indent=1
+    ) + "\n"
+    assert not list(_state_root().glob(".state-*.tmp"))
     assert _last_conversation() == str(paths[0])
     assert _last_conversation("temp") == str(paths[1])
     monkeypatch.chdir(tmp_path)
@@ -154,9 +154,9 @@ def test_state_concurrent_updates_and_failed_operation(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("existing", [False, True])
-@pytest.mark.parametrize("failure_type", [PermissionError, sqlite3.OperationalError])
+@pytest.mark.parametrize("failure_stage", ["write", "replace"])
 def test_state_write_failure_preserves_response(
-    tmp_path, monkeypatch, capsys, existing, failure_type
+    tmp_path, monkeypatch, capsys, existing, failure_stage
 ):
     from textllm import state
 
@@ -169,14 +169,13 @@ def test_state_write_failure_preserves_response(
     if existing:
         target.write_text(original)
     capsys.readouterr()
-    connect = state.sqlite3.connect
-
     def fail_writes(*args, **kwargs):
-        if kwargs.get("uri"):
-            return connect(*args, **kwargs)
-        raise failure_type("state write unavailable")
+        raise PermissionError("state write unavailable")
 
-    monkeypatch.setattr(state.sqlite3, "connect", fail_writes)
+    if failure_stage == "write":
+        monkeypatch.setattr(state.json, "dump", fail_writes)
+    else:
+        monkeypatch.setattr(state.os, "replace", fail_writes)
     result = textllm.cli(
         [str(target), "--title", "off", "--prompt", "Keep this persisted"]
     )
@@ -195,6 +194,7 @@ def test_state_write_failure_preserves_response(
     if existing:
         assert saved.startswith(original)
     assert state._last_conversation() == str(previous)
+    assert not list(state._state_root().glob(".state-*.tmp"))
 
 
 @pytest.mark.parametrize("temporary", [False, True])
@@ -202,8 +202,8 @@ def test_corrupt_state_fails_without_selecting_or_creating_files(tmp_path, tempo
     from textllm.state import _state_root, _temp_directory
 
     _temp_directory().mkdir(parents=True)
-    database = _state_root() / "state.sqlite3"
-    corrupt = b"This is not a SQLite database.\n"
+    database = _state_root() / "state.json"
+    corrupt = b"This is not JSON.\n"
     database.write_bytes(corrupt)
     for target in (
         tmp_path / "latest conversation.md",
@@ -228,7 +228,7 @@ def test_corrupt_state_fails_without_selecting_or_creating_files(tmp_path, tempo
         text=True,
     )
     assert proc.returncode != 0
-    assert "ERROR: file is not a database" in proc.stderr
+    assert "ERROR: Invalid continuation state JSON" in proc.stderr
     assert "deterministic test" not in proc.stderr
     assert proc.stdout == ""
     assert database.read_bytes() == corrupt
@@ -317,6 +317,44 @@ def test_temp_creation_continuation_and_copy(tmp_path, monkeypatch, capsys):
     textllm.cli([str(saved), "--prompt", "Fourth question"])
     assert _last_conversation() == str(saved)
     assert _last_conversation("temp") == str(target)
+
+
+def test_temp_directory_environment(tmp_path, monkeypatch):
+    from textllm.state import _state_root, _temp_directory
+
+    default_root = _state_root()
+    monkeypatch.setenv("TEXTLLM_TEMP_DIR", "")
+    assert _state_root() == default_root
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("TEXTLLM_TEMP_DIR", "~/custom temp & storage")
+    assert _state_root() == tmp_path / "custom temp & storage" / default_root.name
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TEXTLLM_TEMP_DIR", "relative temp")
+    assert _state_root() == tmp_path / "relative temp" / default_root.name
+    assert _temp_directory() == _state_root() / "conversations"
+    assert not _state_root().exists()
+
+
+def test_temp_directory_from_env_file_subprocess(tmp_path):
+    custom = tmp_path / "custom temp & storage"
+    env_file = tmp_path / "settings.env"
+    env_file.write_text(f'TEXTLLM_TEMP_DIR="{custom}"\n')
+    env = os.environ.copy()
+    env.pop("TEXTLLM_TEMPLATE_FILE", None)
+    env.pop("PYTHON_DOTENV_DISABLED", None)
+    env["TEXTLLM_TEST_MODE"] = "1"
+    for extra in ([], ["-c"]):
+        proc = subprocess.run(
+            [sys.executable, str(LOCAL_LAUNCHER), "--env", str(env_file),
+             "--temp", *extra, "--prompt", "Hello"],
+            cwd=tmp_path, env=env, capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert str(custom) in proc.stderr
+    assert "2 user messages" in proc.stdout
+    assert len(list(custom.glob("textllm-*/conversations/*.md"))) == 1
+    assert len(list(custom.glob("textllm-*/state.json"))) == 1
+    assert not list(tmp_path.glob("textllm-*/state.json"))
 
 
 def test_temp_collision_missing_state_and_failures(tmp_path, monkeypatch, capsys):

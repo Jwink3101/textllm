@@ -2,7 +2,7 @@
 
 ## Project Layout
 
-- `textllm/` is the package: `backends.py` owns model adapters and events, `config.py` owns environment defaults, templates, and recursive settings merging, `markdown.py` owns parsing and directives, `conversation.py` owns conversation updates, `files.py` owns filenames and editor operations, `state.py` owns temporary locations and SQLite continuation pointers, and `cli.py` owns command orchestration.
+- `textllm/` is the package: `backends.py` owns model adapters and events, `config.py` owns environment defaults, templates, and recursive settings merging, `markdown.py` owns parsing and directives, `conversation.py` owns conversation updates, `files.py` owns filenames and editor operations, `state.py` owns temporary locations and JSON continuation pointers, and `cli.py` owns command orchestration.
 - `textllm/__init__.py` preserves public imports and the console entry point (`textllm=textllm:cli`). `textllm/__main__.py` supports `python -m textllm`.
 - Root `textllm.py` is a development launcher that prioritizes the adjacent package over installed versions, including when called from another directory or through a symlink.
 - `test_textllm.py` contains the pytest suite, including CLI-style tests and image handling tests.
@@ -39,9 +39,10 @@
 
 ## Testing Notes
 
-- Verify state write failures warn without losing completed responses or replacing earlier pointers. Corrupt SQLite continuation state must fail without guessing or creating conversations. Interrupted temporary streams must preserve their logged path, flushed partial response, and separate continuation pointers.
-- Isolate continuation state for every test, including subprocesses: patch the cached `tempfile.tempdir` and set `TMPDIR`, `TEMP`, and `TMP` to a test directory. Never read or update personal continuation pointers. Cover global continuation, final rename tracking, missing targets, and concurrent SQLite pointer updates using deterministic calls.
+- Verify state write failures warn without losing completed responses or replacing earlier pointers. Corrupt JSON continuation state must fail without guessing or creating conversations. Interrupted temporary streams must preserve their logged path, flushed partial response, and separate continuation pointers.
+- Isolate continuation state for every test, including subprocesses: clear inherited `TEXTLLM_TEMP_DIR`, patch the cached `tempfile.tempdir` and set `TMPDIR`, `TEMP`, and `TMP` to a test directory. Never read or update personal continuation pointers. Cover global continuation, final rename tracking, missing targets, and sequential JSON pointer updates and atomic write failure cleanup using deterministic calls.
 - Give tests a copied environment and remove inherited `TEXTLLM_ENV_PATH` and `TEXTLLM_DEFAULT_HEADER_LEVEL`; tests of these settings must supply controlled values rather than load personal settings.
+- Cover `TEXTLLM_TEMP_DIR` overrides, empty values, relative paths, home expansion, unusual paths, and environment-file loading with separate continuation state.
 - Cover compact ISO 8601 UTC temporary filenames with six fractional digits and trailing `Z`, filename collisions with a fixed clock, ignored rename flags, separate regular/temp continuation, path logging before model failures, template failures without conversation creation, and keeping a temporary conversation by copying it. Keep temporary subprocess checks deterministic and isolated.
 - Cover repeatable TOML overrides across completion, Responses, and Messages: recursive table merges, array/scalar replacement, argument ordering, dedicated CLI flag precedence, title tool isolation, local output settings, unchanged saved TOML, and malformed fragments failing before file mutation. Include initial template header behavior and temporary continuation in subprocesses.
 - Cover template placeholder substitution and double-brace escaping, including literal placeholders in TOML comments and preservation of unknown placeholders.

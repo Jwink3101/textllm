@@ -43,7 +43,7 @@ Creating a new file without edit or prompt input stops after writing the templat
 
 ### Package Layout
 
-The implementation lives in the `textllm/` package. `config.py` handles environment defaults, template discovery/rendering, and recursive settings merging; `markdown.py` handles role markers, settings parsing, message merging, and file directives; `backends.py` adapts model requests and streams into normalized events. `conversation.py` coordinates model calls with conversation-file updates, `files.py` handles filenames and editor operations, `state.py` handles temporary locations and SQLite continuation pointers, and `cli.py` handles arguments and command orchestration.
+The implementation lives in the `textllm/` package. `config.py` handles environment defaults, template discovery/rendering, and recursive settings merging; `markdown.py` handles role markers, settings parsing, message merging, and file directives; `backends.py` adapts model requests and streams into normalized events. `conversation.py` coordinates model calls with conversation-file updates, `files.py` handles filenames and editor operations, `state.py` handles temporary locations and JSON continuation pointers, and `cli.py` handles arguments and command orchestration.
 
 `__init__.py` exposes the public API, including `Conversation`, `loads`, model adapters, and `cli`. `__main__.py` supports `python -m textllm`. The root `textllm.py` launcher puts its resolved directory first on the import path so it runs the adjacent checkout even when another version is installed or the working directory differs. Runtime dependencies are still required. `textllm/_version.py` supplies both the runtime version and setuptools metadata.
 
@@ -55,7 +55,7 @@ The conversation file is the durable source of truth. It contains optional pream
 
 textllm should avoid keeping meaningful state anywhere else. Environment variables and command-line flags affect the current invocation, but the conversation history itself lives in the file.
 
-`--continue` uses disposable SQLite pointers to select the last regular or temporary file, independently of the working directory. `--temp` creates timestamp-named Markdown files under the system temporary directory and ignores rename flags. The database contains paths only, not conversation content. See [continuation, temporary storage, and overrides](continue_temp_overrides.md) for details.
+`--continue` uses disposable JSON pointers to select the last regular or temporary file, independently of the working directory. `--temp` creates timestamp-named Markdown files under the system temporary directory and ignores rename flags. The JSON file contains paths only, not conversation content. See [continuation, temporary storage, and overrides](continue_temp_overrides.md) for details.
 
 ### Template
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.1 (2026-11-23)
+
+- Replace SQLite continuation state with `state.json`, written atomically with one-space indentation and no locks. Concurrent updates may overwrite each other; existing SQLite pointers are not migrated.
+- Add `$TEXTLLM_TEMP_DIR` to select the base directory for temporary conversations and continuation state, including through environment files.
 ## 0.11.0 (2026-11-19)
 
 - Add `-c` / `--continue` to resume the last regular conversation across working directories, tracking textllm renames with disposable SQLite state. An explicit filename with `--continue` must already exist.

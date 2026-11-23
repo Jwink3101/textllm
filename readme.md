@@ -60,11 +60,13 @@ Use `textllm -c` or `textllm --continue` to resume the last regular conversation
 
 `textllm -c file.md` requires that file to exist; plain `textllm file.md` can also create it. If the remembered file was moved or deleted, continuation fails rather than selecting another file. Supply its new filename to establish the remembered path again.
 
-Continuation state uses a small SQLite database in a private user directory under Python's system temporary directory. System cleanup can forget the remembered path without affecting regular conversation files. No state transaction is held during editing or model calls.
+Continuation state uses a small JSON file (`state.json`) in a private user directory under `$TEXTLLM_TEMP_DIR`, or Python's system temporary directory when unset or empty. System cleanup can forget the remembered path without affecting regular conversation files. State is written atomically with one-space indentation and no locks. Concurrent invocations may overwrite each other's pointer updates.
 
 ### Temporary Conversations
 
 Use `-t` / `--temp` to create a conversation under Python's system temporary directory, with a compact ISO 8601 UTC filename with microsecond precision, such as `20261119T190132.123456Z.md`. `textllm --temp -c` resumes the last temporary conversation; regular and temporary continuation are separate and global across working directories. `--temp` cannot be combined with an explicit filename. Temporary conversations can receive document titles but ignore `--rename` / `--move`, keeping their timestamp filenames.
+
+Set `TEXTLLM_TEMP_DIR="/path/to/temp storage"` to choose a different base directory for temporary conversations and continuation state. textllm creates a private `textllm-<user>` subdirectory there, with conversations under `conversations/`. Paths may be relative to the working directory or begin with `~`; use an absolute path for continuation across working directories. Changing this setting selects separate continuation pointers and does not move existing files. It can also be set in an environment file.
 
 The path is logged before model calls, including when continuing. Files survive process exit but may be removed by system temporary-file cleanup. To keep a conversation, copy it from the path reported in the logs and then use the permanent copy:
 
@@ -116,6 +118,7 @@ Most behavior is governed by command-line flags but there are a few exceptions.
 | Variable | Description |
 |--|--|
 | `$TEXTLLM_ENV_PATH` | Path to an environment file for API keys. They can also just be set directly. |
+| `$TEXTLLM_TEMP_DIR` | Base directory for temporary conversations and continuation state; unset or empty uses Python's system temporary directory. |
 | `$TEXTLLM_EDITOR` | Set the editor for the `--edit` flag. Will fall back to `$EDITOR` and then `vi`. |
 | `$TEXTLLM_DEFAULT_MODEL` | Sets the default model if one is not specified and writes it into templates for new chats. |
 | `$TEXTLLM_DEFAULT_TEMPERATURE` | Fills `{temperature}` in templates for new chats; omitted conversation settings are not sent to the provider. |
