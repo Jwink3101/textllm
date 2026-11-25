@@ -10,6 +10,10 @@ Install from PyPI:
 
     $ pip install textllm
 
+Or install as a command-line tool with [uv](https://docs.astral.sh/uv/getting-started/installation/):
+
+    $ uv tool install textllm
+
 any-llm handles provider integrations. In most cases, install textllm and set the provider API key in the environment.
 
 From a source checkout, run `python textllm.py` to use the local development code whether or not textllm is installed. The launcher also works when called by path from another directory. Runtime dependencies must still be installed. Both the checkout and installed package support `python -m textllm`.
@@ -27,9 +31,10 @@ That will look something like:
 # !!AUTO TITLE!!
 
 ```toml
+[llm]
 # Optional Settings
-temperature = 1.0
-model = 'openai/gpt-5.5'
+# temperature = 1.0
+model = 'openai/gpt-6-luna'
 ```
 
 Created with textllm-0.7.0 at 2026-05-24T12:00:00-06:00
@@ -77,17 +82,23 @@ cp "/tmp/textllm-1000/conversations/20261119T190132.123456Z.md" "Gravity notes.m
 textllm "Gravity notes.md" --prompt "How does relativity change this?"
 ```
 
+If a `.db` sidecar exists, copy it to `Gravity notes.md.db` as well, or use `textllm.copy_conversation(source, destination)` from Python to copy the pair.
+
 Copying leaves the temporary original available to `--temp -c`. Using the saved copy makes it the last regular conversation. Relative image, include, and attachment paths resolve from the conversation's directory; copy any referenced local assets separately and adjust links as needed.
+
+### MCP Tools
+
+List MCP servers under `[[textllm.mcp]]` using a `url` or `command`. All discovered tools become available to the model. HTTP bearer tokens can be read from environment variables. An actual tool call creates `conversation.md.db` for calls, results, and their associated reasoning. Reasoning alone or unused MCP configuration creates no sidecar; copy or move the Markdown and sidecar together. See [MCP tools and sidecars](docs/mcp.md) for configuration, reasoning behavior, limits, and recovery.
 
 ### Settings Overrides
 
 Use `-o TOML` or `--override TOML` to override settings for one invocation without changing the file's saved TOML. Repeat the option to combine fragments:
 
 ```bash
-textllm -c -o 'temperature = 0.3'
-textllm --temp --prompt "Explain gravity" -o 'model = "openai/gpt-5.5"'
-textllm -c -o 'textllm.backend = "responses"' -o 'reasoning.effort = "high"'
-textllm -c -o 'textllm.title.model = "openai/gpt-5.5"'
+textllm -c -o 'llm.temperature = 0.3'
+textllm --temp --prompt "Explain gravity" -o 'llm.model = "openai/gpt-6-luna"'
+textllm -c -o 'textllm.backend = "responses"' -o 'llm.reasoning.effort = "high"'
+textllm -c -o 'textllm.title.model = "openai/gpt-6-luna"'
 ```
 
 Settings precedence, from lowest to highest priority:
@@ -121,7 +132,7 @@ Most behavior is governed by command-line flags but there are a few exceptions.
 | `$TEXTLLM_TEMP_DIR` | Base directory for temporary conversations and continuation state; unset or empty uses Python's system temporary directory. |
 | `$TEXTLLM_EDITOR` | Set the editor for the `--edit` flag. Will fall back to `$EDITOR` and then `vi`. |
 | `$TEXTLLM_DEFAULT_MODEL` | Sets the default model if one is not specified and writes it into templates for new chats. |
-| `$TEXTLLM_DEFAULT_TEMPERATURE` | Fills `{temperature}` in templates for new chats; omitted conversation settings are not sent to the provider. |
+| `$TEXTLLM_DEFAULT_TEMPERATURE` | Fills `{temperature}` in templates for new chats (default `1.0`); the built-in template comments this setting out, leaving the provider default unless uncommented. |
 | `$TEXTLLM_DEFAULT_HEADER_LEVEL` | Sets the default heading level for newly written role markers when the file does not set `[textllm].header_level`. Use `0` through `6`; the default is `0`. |
 | `$TEXTLLM_TEMPLATE_FILE` | Selects a template path or `@name` for new chats. Overridden by `--template`; does not supply runtime defaults to existing conversations. |
 | `$TEXTLLM_TEMPLATE_DIR` | Directory whose immediate `.md` files define named templates. |
@@ -140,7 +151,8 @@ TEXTLLM_NAMED_TEMPLATE_special="${HOME}/work/custom template.md"
 
 ```bash
 textllm --template @special
-textllm --list-templates
+textllm --list-templates  # Names only
+textllm --list-templates --list-templates  # Include paths, sources, and shadowed entries
 ```
 
 An explicit registration wins over a same-named directory template. `TEXTLLM_TEMPLATE_FILE=@special` selects a named default. A selector beginning with `@` is always a name; use `./@special` for a literal filename starting with `@`. See [Named Templates](docs/template_defaults.md#named-templates) for discovery, precedence, and environment expansion details.
@@ -162,21 +174,22 @@ These can be specified outside of textllm, but you can also store them in a file
 Any model understood by the selected any-llm API can be used. The default backend is the completion API. Set `[textllm].backend = "responses"` for providers and models that implement any-llm's Responses API, or `"messages"` for any-llm's Anthropic-style Messages API. Anthropic uses Messages natively. OpenRouter model names use OpenRouter's native Anthropic-compatible Messages endpoint. Remaining providers may use any-llm's compatibility bridge. Prefer `provider/model` in textllm files. textllm also accepts `provider:model` for compatibility with any-llm examples and older LangChain-era files, and passes the provider and remaining model id to any-llm.
 
 ```toml
-model = "openai/gpt-5.5"
-model = "openai:gpt-5.5"
-model = "openai/gpt-4o-mini"
-model = "anthropic/claude-sonnet-4-5"
+[llm]
+model = "openai/gpt-6-luna"
+model = "openai:gpt-6-luna"
+model = "anthropic/claude-haiku-5-5"
 model = "gemini/gemini-2.5-pro"
 model = "ollama/llama3.1"
-model = "openrouter/openai/gpt-4o-mini"
+model = "openrouter/openai/gpt-6-luna"
 ```
 
-All TOML settings except `model` and the reserved `[textllm]` table are passed through to any-llm. Unsupported settings will fail at the any-llm or provider layer. Reasoning controls, OpenAI and OpenRouter Responses examples, native Anthropic Messages examples, reasoning summaries, and built-in web search are documented in [Reasoning Models and Tools](docs/reasoning_and_tools.md).
+Settings under `[llm]` are passed through to any-llm, except `model`, which selects the provider and model. The reserved `[textllm]` table controls local behavior. Unsupported settings will fail at the any-llm or provider layer. Reasoning controls, OpenAI and OpenRouter Responses examples, native Anthropic Messages examples, reasoning summaries, and built-in web search are documented in [Reasoning Models and Tools](docs/reasoning_and_tools.md).
 
 For example, an OpenAI reasoning call with hosted web search can use:
 
 ```toml
-model = "openai/gpt-5.5"
+[llm]
+model = "openai/gpt-6-luna"
 reasoning = { effort = "high", summary = "auto" }
 tools = [{ type = "web_search" }]
 max_tool_calls = 5
@@ -186,7 +199,7 @@ backend = "responses"
 reasoning_summary = "block"
 ```
 
-For OpenAI Responses, requesting and saving a reasoning summary require two separate settings: `summary = "auto"` inside the top-level `reasoning` object requests a summary from OpenAI, and `[textllm].reasoning_summary = "block"` tells textllm to save any returned summary. Setting `effort = "high"` alone enables high reasoning effort without requesting a summary. Reasoning tokens can therefore appear in usage reports even when no summary is returned.
+For OpenAI Responses, requesting and saving a reasoning summary require two separate settings: `summary = "auto"` inside the `llm.reasoning` object requests a summary from OpenAI, and `[textllm].reasoning_summary = "block"` tells textllm to save any returned summary. Setting `effort = "high"` alone enables high reasoning effort without requesting a summary. Reasoning tokens can therefore appear in usage reports even when no summary is returned.
 
 The answer streams to terminal stdout. Returned summaries are saved in local-only `--- Reasoning ---` blocks in the conversation file; they are not printed to stdout. URL citations are appended as a Markdown `Sources` section. Reasoning and answer blocks are written in stream-event order, so a provider may produce alternating `Reasoning` and `Assistant` blocks. On later calls, the reasoning blocks are omitted and the assistant segments are merged into one model-facing message. Summaries are provider-supplied explanations, not the raw hidden reasoning.
 
@@ -204,7 +217,8 @@ Token reports are written only after the model call completes successfully and r
 For a native Anthropic Messages reasoning call:
 
 ```toml
-model = "anthropic/claude-sonnet-4-6"
+[llm]
+model = "anthropic/claude-haiku-5-5"
 max_tokens = 16000
 thinking = { type = "adaptive" }
 output_config = { effort = "medium" }
@@ -219,7 +233,8 @@ The Messages backend requires `max_tokens`. It converts `System` and `Developer`
 The same Messages shape can be sent through OpenRouter by changing only the model provider prefix and setting `$OPENROUTER_API_KEY`:
 
 ```toml
-model = "openrouter/anthropic/claude-sonnet-4.6"
+[llm]
+model = "openrouter/anthropic/claude-haiku-5.5"
 max_tokens = 16000
 thinking = { type = "adaptive" }
 output_config = { effort = "medium" }
@@ -228,6 +243,34 @@ output_config = { effort = "medium" }
 backend = "messages"
 reasoning_summary = "block"
 ```
+
+### Environment References in TOML
+
+Environment expansion applies to the whole TOML configuration: provider settings under `[llm]`, local behavior under `[textllm]`, title overrides under `[textllm.title]`, and nested tables and arrays. Use `${NAME}` in any string value to read an environment variable when executing the conversation:
+
+```toml
+[llm]
+model = "${CHAT_MODEL}"
+api_key = "${CHAT_API_KEY}"
+
+[textllm]
+backend = "${CHAT_BACKEND}"
+
+[textllm.title]
+model = "${TITLE_MODEL}"
+```
+
+Expansion runs once over nested tables and arrays after environment files and overrides are loaded. Substituted values are not expanded again. `$${NAME}` produces literal `${NAME}`. Keys and non-string values are unchanged; numbers and booleans retain their TOML types rather than being inferred from environment strings. Saved TOML and conversation prose are not rewritten.
+
+Creating a new conversation from a template preserves unresolved references and does not require the variables. Missing values fail when executing the conversation, before model/MCP calls or prompt/file mutation. Template placeholders such as `{model}` are still filled when the file is created; `${NAME}` remains available for runtime configuration on later invocations.
+
+Practical limits:
+
+- Expansion happens after settings sources are merged, including `-o` / `--override` fragments. A reference replaced by an override does not need to exist. Every reference remaining in the effective configuration must exist, including title settings even when automatic titles are disabled. An empty environment value is accepted by expansion but may fail setting-specific validation.
+- Values remain strings: use TOML integers and booleans for settings such as `max_tokens` and `header_level`. An environment value containing TOML or JSON is not parsed into a table or array. Quotes, spaces, and newlines are inserted as string data.
+- Only `${NAME}` with names matching `[A-Za-z_][A-Za-z0-9_]*` is recognized. Bare `$NAME`, `${NAME:-default}`, `~`, and shell commands are not evaluated. Escape references in literal examples or provider tool schemas as `$${NAME}`.
+- References are resolved from the environment loaded for the current invocation, so replaying the same Markdown with a changed environment can change the model, endpoint, or other settings. Environment files have their own python-dotenv expansion rules; see [environment loading](docs/template_defaults.md#environment-files-and-paths).
+- Settings debug logs retain unresolved references and redact recognized credential fields. Resolved values still reach the configured provider or local feature; avoid placing secrets in settings whose values a provider may return in answers or tool results. Environment references keep credentials out of saved TOML but do not conceal downstream output.
 
 ## Format Description
 
@@ -245,7 +288,7 @@ Generally, this is only set once, but if `!!AUTO TITLE!!` is added back to the f
 
 ### (2) Settings
 
-Specify settings in [TOML][toml] format inside a Markdown fenced code block. Settings are passed to any-llm except for `model`, which selects the provider and model, and the reserved `[textllm]` table, which controls textllm behavior. A missing `model` uses the environment default. Other provider parameters, including `temperature`, are sent only when present in the conversation settings.
+Specify settings in [TOML][toml] format inside a Markdown fenced code block. Put provider settings under `[llm]`; `llm.model` selects the provider and model. The reserved `[textllm]` table controls textllm behavior and is never passed to the provider. Legacy root-level provider settings still work with a deprecation warning; see the [settings migration guide](docs/migration_llm_settings.md). A missing `model` uses the environment default. Other provider parameters, including `temperature`, are sent only when present in the conversation settings.
 
 Note that providers require API keys. Keys can be passed through settings when any-llm supports that, but environment variables or an environment file are usually better.
 
@@ -323,8 +366,8 @@ If using `--edit` to edit the file before submitting, it can be useful to open a
 
 ## More Docs
 
-- [any-llm migration guide](docs/migration_any_llm.md)
-- [LiteLLM migration guide](docs/migration_litellm.md)
+- [Settings migration guide](docs/migration_llm_settings.md)
+- [Earlier backend migrations](docs/migration_backends.md)
 - [Template defaults and environment variables](docs/template_defaults.md)
 - [Roadmap](docs/roadmap.md)
 - [Testing strategy](docs/testing_strategy.md)

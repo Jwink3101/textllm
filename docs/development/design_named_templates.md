@@ -139,7 +139,7 @@ Preserve textllm's existing loading order, with later files overriding earlier v
 
 `--list-templates` loads environment configuration, lists effective registered and directory-discovered names in sorted order, and exits without creating a conversation or calling a model. It does not need provider credentials.
 
-For each name, show the selector, effective path, and source. When an explicit registration overrides a directory entry, show the shadowed directory path as additional information. Quote or escape names and paths where needed so whitespace and other filename characters remain unambiguous.
+With one `--list-templates`, show only the selectors. With two or more occurrences, also show each effective path and source. When an explicit registration overrides a directory entry, the detailed listing shows the shadowed directory path as additional information. Quote or escape names and paths where needed so whitespace and other filename characters remain unambiguous.
 
 Listing identifies broken entries, such as empty registrations, missing files, or invalid UTF-8, without hiding the remaining entries. Broken entries and failures to inspect the configured directory produce a nonzero exit status. An empty collection explains how to configure templates.
 
@@ -148,6 +148,8 @@ No template descriptions or metadata format are introduced initially.
 ## Conversation Behavior
 
 Named and directory-discovered templates use the same rendering and conversation initialization behavior as existing template paths. They can contain settings, system instructions, starting messages, and the supported placeholders documented in [Template Defaults and Environment Variables](../template_defaults.md).
+
+Creating a template does not resolve `${NAME}` references in its TOML against the runtime environment or require MCP credentials. Runtime settings are resolved when executing the conversation; this is separate from python-dotenv expansion of template registration paths.
 
 Templates initialize new conversations. They do not modify existing conversations or supply additional runtime defaults to them. Editing a template does not change conversations already created from it. Preserve existing behavior in which template files are only resolved and read when creating a new conversation.
 

@@ -59,6 +59,8 @@ cp "/tmp/textllm-<user>/conversations/20261119T190132.123456Z.md" "Gravity notes
 textllm "Gravity notes.md" --prompt "How does relativity change this?"
 ```
 
+If the conversation has a tool-history sidecar, copy it to `Gravity notes.md.db` too, or use `textllm.copy_conversation(source, destination)` to copy the pair. Reasoning alone does not require a sidecar.
+
 The temporary path above is illustrative; use the logged path for your system. Copying preserves the temporary original for `--temp --continue`. Opening the permanent copy makes it the last regular conversation. Copy any referenced local assets separately if needed; relative links remain relative to the conversation file's location.
 
 ## Repeatable TOML Overrides
@@ -66,10 +68,10 @@ The temporary path above is illustrative; use the logged path for your system. C
 `-o TOML` / `--override TOML` is accepted multiple times:
 
 ```bash
-textllm -c -o 'temperature = 0.3'
-textllm --temp --prompt "Explain gravity" -o 'model = "openai/gpt-5.5"'
-textllm -c -o 'textllm.backend = "responses"' -o 'reasoning.effort = "high"'
-textllm -c -o 'textllm.title.model = "openai/gpt-5.5"'
+textllm -c -o 'llm.temperature = 0.3'
+textllm --temp --prompt "Explain gravity" -o 'llm.model = "openai/gpt-6-luna"'
+textllm -c -o 'textllm.backend = "responses"' -o 'llm.reasoning.effort = "high"'
+textllm -c -o 'textllm.title.model = "openai/gpt-6-luna"'
 ```
 
 Each argument is a complete TOML fragment, parsed independently with the existing standard-library TOML parser. Dotted keys, inline tables, and quoted multiline arguments use normal TOML syntax. Invalid fragments fail before creating or editing a conversation or invoking a model. Separate fragments may repeat keys; duplicate keys within one fragment remain a TOML error.
@@ -93,6 +95,8 @@ Settings precedence, from lowest to highest priority:
 Environment defaults keep their existing role; in particular, an omitted temperature remains omitted unless supplied by the template/file or an override.
 
 Overrides apply only to this invocation and do not rewrite or append the document's TOML settings. Repeating the command without `-o` uses the saved settings again. They affect both provider parameters and reserved `[textllm]` behavior, including output formatting and token reporting. The reserved table remains local and is never sent to a provider. Overrides do not select templates, storage locations, or continuation targets.
+
+After merging, resolve `${NAME}` references once throughout parsed TOML string values against the loaded environment; preserve saved TOML. Template-only creation allows missing runtime variables. See [environment references](format_spec.md#environment-references).
 
 Build one effective settings view and use it consistently for chat, title generation, and local output behavior. Preserve existing title-specific precedence: `[textllm.title]` overrides the shared model settings for title requests, including when supplied through `-o`. Title requests must still strip tools and tool choice. Apply an overridden header level to initial built-in or placeholder-enabled template markers as well as newly appended markers, without rewriting literal markers in explicit templates.
 

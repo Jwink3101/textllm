@@ -1,12 +1,13 @@
 # Custom API Endpoints
 
-Set `api_base` in the conversation's top-level TOML settings to send requests to a custom server, proxy, or gateway. textllm passes it to any-llm alongside the selected provider and model. It belongs outside the reserved `[textllm]` table.
+Set `api_base` under `[llm]` in the conversation's TOML settings to send requests to a custom server, proxy, or gateway. textllm passes it to any-llm alongside the selected provider and model. It belongs outside the reserved `[textllm]` table.
 
 ## OpenAI-Compatible Servers
 
 For a server implementing streamed Chat Completions, use the `openai/` provider prefix and the model identifier advertised by that server:
 
 ```toml
+[llm]
 model = "openai/your-served-model"
 api_base = "http://localhost:8000/v1"
 
@@ -33,7 +34,8 @@ To use a Responses-compatible endpoint, set `backend = "responses"` under `[text
 OpenRouter Messages is a special case already handled by textllm:
 
 ```toml
-model = "openrouter/anthropic/claude-sonnet-4.6"
+[llm]
+model = "openrouter/anthropic/claude-haiku-5.5"
 max_tokens = 16000
 
 [textllm]

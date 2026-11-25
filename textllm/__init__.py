@@ -17,7 +17,14 @@ from .backends import (
 from .cli import cli
 from .config import CONFIG, DEFAULT_FILEPATH, log
 from .conversation import Conversation, NoHumanMessageError, NoUserMessageError
-from .files import clean_filepath, file_edit, title2filename, uniqueify_filepath
+from .files import (
+    clean_filepath,
+    file_edit,
+    title2filename,
+    uniqueify_filepath,
+    copy_conversation,
+    move_conversation,
+)
 from .markdown import (
     grouper,
     loads,

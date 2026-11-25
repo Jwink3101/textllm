@@ -13,6 +13,7 @@ FLAG2ROLE = {
     "--- assistant ---": "assistant",
     "--- note ---": "note",
     "--- reasoning ---": "reasoning",
+    "--- tools ---": "tools",
 }
 
 LOCAL_ONLY_ROLES = {"note", "reasoning"}
@@ -85,7 +86,13 @@ def merge_message_runs(messages):
     """
     merged = []
     for message in messages:
-        if merged and merged[-1]["role"] == message["role"]:
+        if (
+            merged
+            and merged[-1]["role"] == message["role"]
+            and message["role"] != "tool"
+            and "_native" not in message
+            and "_native" not in merged[-1]
+        ):
             merged[-1] = {
                 "role": merged[-1]["role"],
                 "content": _merge_content(
@@ -394,6 +401,37 @@ def read_settings(text):
     return {}
 
 
+def _unwrap_tools_comments(text):
+    """Remove only the HTML comment wrapper reserved for Tools blocks."""
+
+    opening = re.compile(
+        r"^<!--[ \t]*\n(?=[ \t\n]*(?:#{1,6}[ \t]+)?--- tools ---)",
+        re.MULTILINE | re.IGNORECASE,
+    )
+    closing = re.compile(r"^[ \t]*-->[ \t]*(?=\n|$)", re.MULTILINE)
+    parts = []
+    position = 0
+    for match in opening.finditer(text):
+        if match.start() < position:
+            continue
+        end = closing.search(text, match.end())
+        if end is None:
+            raise ValueError("Unclosed Tools comment")
+        body = text[match.end() : end.start()]
+        markers = list(CONVO_PATTERN.finditer(body))
+        if (
+            "<!--" in body
+            or "-->" in body
+            or len(markers) != 1
+            or _role_from_marker(markers[0].group(0)) != "tools"
+        ):
+            raise ValueError("Invalid Tools comment; expected one Tools block")
+        parts.extend((text[position : match.start()], body))
+        position = end.end()
+    parts.append(text[position:])
+    return "".join(parts)
+
+
 def loads(text):
     """Parse textllm Markdown into title, settings, top matter, and messages.
 
@@ -410,7 +448,7 @@ def loads(text):
     """
     res = {}
 
-    split_text = CONVO_PATTERN.split(text)
+    split_text = CONVO_PATTERN.split(_unwrap_tools_comments(text))
 
     # Split will split at the flags. If the first item is a flag, then there is no
     # top matter. If it isn't a flag, the first item is top matter.

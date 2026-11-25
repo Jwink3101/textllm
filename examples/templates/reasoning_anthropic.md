@@ -1,7 +1,8 @@
 # {AUTO_TITLE}
 
 ```toml
-model = "anthropic/claude-sonnet-4-6"
+[llm]
+model = "anthropic/claude-haiku-5-5"
 # Thinking and answer text share this output allowance.
 max_tokens = 16000
 thinking = { type = "adaptive" }

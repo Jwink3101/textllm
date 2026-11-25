@@ -1,7 +1,8 @@
 # {AUTO_TITLE}
 
 ```toml
-model = "openrouter/anthropic/claude-sonnet-4.6"
+[llm]
+model = "openrouter/anthropic/claude-haiku-5.5"
 max_output_tokens = 16000
 # Returned reasoning depends on the routed model and provider.
 reasoning = { effort = "high", summary = "auto" }

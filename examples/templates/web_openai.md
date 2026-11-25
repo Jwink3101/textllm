@@ -1,9 +1,10 @@
 # {AUTO_TITLE}
 
 ```toml
+[llm]
 # Optional Settings
 # temperature = {temperature} # {{temperature}} (commented out for OpenAI)
-model = 'openai/gpt-6.1-sol'
+model = 'openai/gpt-6-luna'
 tools = [{ type = "web_search" }]
 reasoning = { effort = "high"}
 #reasoning = { effort = "high", summary = "auto" }

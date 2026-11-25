@@ -11,7 +11,8 @@ Caching is most useful when the reusable prefix is large enough to meet the prov
 OpenAI automatically caches eligible repeated prompt prefixes. No setting is required to enable ordinary implicit caching. A stable `prompt_cache_key` can improve cache-hit rates by helping requests with the same prefix reach the same cache:
 
 ```toml
-model = "openai/gpt-5.6"
+[llm]
+model = "openai/gpt-6-luna"
 prompt_cache_key = "textllm:research-assistant:v1"
 
 [textllm]
@@ -24,7 +25,8 @@ Use a stable, non-secret label for a workload whose opening instructions and too
 Models that support OpenAI's newer cache controls can set them in the Responses request body through `extra_body`:
 
 ```toml
-model = "openai/gpt-5.6"
+[llm]
+model = "openai/gpt-6-luna"
 prompt_cache_key = "textllm:research-assistant:v1"
 extra_body = { prompt_cache_options = { mode = "implicit", ttl = "30m" } }
 
@@ -42,7 +44,8 @@ The completion backend can also benefit from OpenAI's implicit prompt caching. W
 Anthropic supports automatic caching for a growing conversation through the top-level `cache_control` setting:
 
 ```toml
-model = "anthropic/claude-sonnet-4-6"
+[llm]
+model = "anthropic/claude-haiku-5-5"
 max_tokens = 16000
 cache_control = { type = "ephemeral" }
 
@@ -54,6 +57,7 @@ tokens = "note"
 The default ephemeral cache has a short lifetime. For supported models, a one-hour entry can be requested explicitly:
 
 ```toml
+[llm]
 cache_control = { type = "ephemeral", ttl = "1h" }
 ```
 
@@ -66,7 +70,8 @@ Longer retention and cache creation can cost more than ordinary input. Caching i
 The same automatic `cache_control` setting can be used with an Anthropic model through textllm's OpenRouter Messages backend:
 
 ```toml
-model = "openrouter/anthropic/claude-sonnet-4.6"
+[llm]
+model = "openrouter/anthropic/claude-haiku-5.5"
 max_tokens = 16000
 cache_control = { type = "ephemeral" }
 

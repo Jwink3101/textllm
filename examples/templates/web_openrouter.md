@@ -1,9 +1,10 @@
 # {AUTO_TITLE}
 
 ```toml
+[llm]
 # Optional Settings
 temperature = {temperature} # {{temperature}}
-model = 'openrouter/anthropic/claude-sonnet-4.6'
+model = 'openrouter/anthropic/claude-haiku-5.5'
 tools = [
     { type = "openrouter:web_search", parameters = { max_results = 5 } },
     { type = "openrouter:web_fetch" },

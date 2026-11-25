@@ -26,7 +26,8 @@ The canonical shape is:
 # Conversation Title
 
 ```toml
-model = "openai/gpt-5.5"
+[llm]
+model = "openai/gpt-6-luna"
 temperature = 1.0
 ```
 
@@ -69,7 +70,8 @@ Settings are written as TOML in a Markdown fenced code block in the preamble:
 
 ````markdown
 ```toml
-model = "openai/gpt-5.5"
+[llm]
+model = "openai/gpt-6-luna"
 temperature = 1.0
 max_tokens = 2000
 ```
@@ -77,19 +79,21 @@ max_tokens = 2000
 
 The first fenced code block in the preamble whose info string is empty or `toml` is the settings block. Producers should use `toml` for clarity. The block must contain valid TOML.
 
-The `model` setting selects the any-llm provider and model. Producers should write `provider/model`, which is the preferred textllm form. Readers also accept `provider:model` for compatibility. Other settings are passed through to any-llm as call settings except for the reserved `[textllm]` table.
+The `model` setting selects the any-llm provider and model. Producers should write `provider/model`, which is the preferred textllm form. Readers also accept `provider:model` for compatibility. Provider settings under `[llm]` are unpacked and passed through to any-llm as call settings. The reserved `[textllm]` table remains local. Legacy root-level provider settings remain supported with one deprecation warning per invocation; explicit `[llm]` values win conflicts within a source.
 
 The `[textllm]` table defines local behavior. Supported keys are:
 
 - `backend`: `completion`, the default, `responses`, or `messages`.
 - `header_level`: an integer from `0` through `6` controlling newly written role markers. `0` writes plain separators; levels `1` through `6` write ATX Markdown headings. The `--header-level` CLI option overrides this setting. When neither is present, `$TEXTLLM_DEFAULT_HEADER_LEVEL` supplies the default and falls back to `0`; it may be loaded from the process environment, `.env`, `$TEXTLLM_ENV_PATH`, or `--env`.
-- `reasoning_summary`: `omit`, the default, `block`, or `stderr`.
+- `reasoning_summary`: `omit` (default) hides returned reasoning; `block` streams readable reasoning into local-only blocks; `stderr` writes the summary directly to stderr after a successful response, independently of logging verbosity. This setting controls display, not whether a tool exchange retains native reasoning.
+- `mcp`: an array of server tables, each specifying exactly one `url` or `command`, with optional name, stdio environment, or HTTP `bearer_token` string (literal or `${NAME}` reference). All discovered tools are exposed.
+- `tools`: a local table of finite tool-loop limits (`max_rounds`, `max_calls`, `timeout`, `max_result_chars`, and `max_context_chars`), separate from provider tool declarations under `[llm].tools`.
 - `tokens`: `none`, the default, `stderr`, or `note`. Reports provider-returned usage for the latest successful conversational call to stderr or a local-only `Note` block. The `--tokens` CLI option overrides this setting. Earlier calls and automatic-title usage are excluded; failed or interrupted calls do not produce a report.
 - `title`: a nested table of settings that override normal settings during automatic-title generation, including an optional separate `model`. The conversation's backend is retained. Overrides replace entire top-level values, including nested provider objects such as `reasoning`. Tools are removed from title calls even if specified here. See [Automatic Titles](../reasoning_and_tools.md#automatic-titles) for examples.
 
 The format does not validate provider settings or guarantee that a provider implements the selected backend or feature.
 
-The `messages` backend calls any-llm's Anthropic-style Messages interface. It requires a `max_tokens` setting. Before the call, textllm joins `System` and `Developer` role content into the separate Messages `system` parameter, retains `User` and `Assistant` entries in the message list, and converts image inputs to Anthropic base64 or URL image-source blocks. If a top-level TOML `system` value is present, it is placed before system-role content from the conversation. Native-only Messages settings require a provider endpoint that implements the Anthropic Messages API rather than any-llm's compatibility bridge.
+The `messages` backend calls any-llm's Anthropic-style Messages interface. It requires a `max_tokens` setting. Before the call, textllm joins `System` and `Developer` role content into the separate Messages `system` parameter, retains `User` and `Assistant` entries in the message list, and converts image inputs to Anthropic base64 or URL image-source blocks. If a TOML `llm.system` value is present, it is placed before system-role content from the conversation. Native-only Messages settings require a provider endpoint that implements the Anthropic Messages API rather than any-llm's compatibility bridge.
 
 For a model beginning with `openrouter/`, the Messages backend uses any-llm's Anthropic transport with OpenRouter's Anthropic-compatible base URL. `$OPENROUTER_API_KEY` supplies authentication unless an explicit `api_key` setting is present. An explicit `api_base` setting overrides the default `https://openrouter.ai/api`. The remaining model id, including its author namespace, is preserved.
 
@@ -108,6 +112,7 @@ Conversation messages are written as role blocks. A role marker is a line contai
 --- Assistant ---
 --- Note ---
 --- Reasoning ---
+--- Tools ---
 ```
 
 Each marker may optionally be prefixed by an ATX heading marker and a space, from `# --- User ---` through `###### --- User ---`. Plain and heading-prefixed markers may be mixed in one file. Markers are case-insensitive when read. Producers should use canonical role capitalization and a heading level from `0` through `6`.
@@ -123,7 +128,8 @@ The supported roles map to model roles as follows:
 | `--- User ---` | `user` |
 | `--- Assistant ---` | `assistant` |
 | `--- Note ---` | Not sent; local-only content |
-| `--- Reasoning ---` | Not sent; local-only reasoning content |
+| `--- Reasoning ---` | Local display text; never sent |
+| `--- Tools ---` | Sidecar references expanded into native tool exchanges and associated reasoning |
 
 `Note` and `Reasoning` blocks are retained in the parsed file representation but omitted from every model request. This includes normal chat calls and the conversation content used for automatic title generation. Local-only blocks may appear between any role blocks, and a trailing local-only block does not change which model message is considered last.
 
@@ -211,13 +217,13 @@ The description remains text context. textllm appends the included contents afte
 
 As with local attachments, included files are reread on each invocation. Their expanded contents are not persisted in the conversation file, so later requests use the current file contents even for directives in earlier turns.
 
-Assistant messages are persisted as text. Responses and Messages URL citations are appended to the assistant text as a conventional Markdown `### Sources` section. The sources are therefore ordinary assistant content on later turns. Search queries, raw search results, tool call objects, assistant-generated images, thinking signatures, and hidden reasoning data are not persisted.
+Assistant messages are persisted as text. Responses and Messages URL citations are appended to the assistant text as a conventional Markdown `### Sources` section. The sources are therefore ordinary assistant content on later turns. MCP calls/results and their associated reasoning/continuation data are persisted in the adjacent sidecar, as described in [MCP tools and sidecars](../mcp.md). Hosted search data is not generally replayed; native payloads retained for tool continuation may contain additional provider items. Assistant-generated images and unreturned hidden reasoning are not supported.
 
 When `[textllm].reasoning_summary = "block"`, provider-returned reasoning-summary content is written as local-only `Reasoning` blocks in stream-event order. For the Messages backend, this includes text from Anthropic `thinking` blocks. A response may contain alternating `Reasoning` and `Assistant` blocks. Reasoning remains visible to the reader but is excluded from future model and automatic-title requests; assistant blocks that become adjacent after that filtering are merged with a blank line. This is distinct from hidden chain-of-thought that a provider does not return, which textllm cannot request or store.
 
 ## Appending Responses
 
-A normal model call expects the conversation to end with a `User` block. textllm starts an `Assistant` block when the model emits an answer-text chunk and, when block-mode reasoning is enabled, starts a `Reasoning` block when the model emits a reasoning chunk. It opens a new block whenever the persisted event role changes, preserving event order, and writes a new empty `User` block after successful completion. If the model call fails before emitting any persisted answer or block-mode reasoning content, textllm leaves the conversation body unchanged. A failure after persisted content begins may leave the partial event transcript in the file.
+A normal model call expects the conversation to end with a `User` block. textllm starts an `Assistant` block when the model emits an answer-text chunk and, when block-mode reasoning is enabled, starts a `Reasoning` block when the model emits a reasoning chunk. It opens a new block whenever the persisted event role changes, preserving event order, and writes a new empty `User` block when the chat attempt exits, including on model failure, empty output, or interruption. Partial event transcripts remain before that final marker. Validation failures before opening the conversation for a chat attempt do not mutate it.
 
 Tools may allow calls where the file does not end with a user message, but that is operational behavior rather than a different file format.
 
@@ -241,6 +247,37 @@ Producers should:
 
 ## Extension Guidance
 
-Future extensions should keep the file readable as Markdown and avoid changing the meaning of existing role blocks. New model capabilities should prefer explicit syntax or clearly documented settings over inference from ordinary prose. Provider-hosted tools are configured explicitly in TOML; arbitrary function execution is outside the current format.
+Future extensions should keep the file readable as Markdown and avoid changing the meaning of existing role blocks. New model capabilities should prefer explicit syntax or clearly documented settings over inference from ordinary prose. Provider-hosted tools are configured explicitly in TOML; MCP tools use explicit local settings and sidecar references; other client-executed tool types remain future extensions.
 
 When adding textllm-owned metadata, choose names that are unlikely to collide with any-llm provider settings and document whether they belong in TOML settings, preamble text, or message content.
+
+
+## Environment References
+
+Parsed TOML string values are resolved once against the loaded environment at execution, after source merging. `${NAME}` expands and `$${NAME}` escapes a literal reference. This applies throughout nested provider/local settings, not to keys, non-string types, comments, or conversation text. Template-only creation preserves unresolved references. Missing variables fail before execution mutates the conversation. See [configuration-wide environment references](../../readme.md#environment-references-in-toml).
+
+## Sidecar References
+
+Sidecars are reserved for MCP tool-call history and future client tool integrations. Reasoning alone never creates a sidecar, even with MCP configured. A sidecar is created only after the model requests a tool call. Reasoning returned during that tool exchange, including the final answer after execution, is retained for native replay in all display modes. Reasoning from a turn without tool calls remains display-only and is not replayed. This is the current storage policy, not a requirement of the sidecar format; revisit it if general provider-native state replay is added.
+
+The conventional sidecar is the Markdown path plus `.db`, storing versioned JSONLiteDB records in SQLite `DELETE` journal mode with `wal_mode=False` and a direct `PRAGMA journal_mode=DELETE` on each open, including existing WAL databases. `Tools` blocks require standalone `[@sidecar optional description](uuid)` directives. The description is informational. Each key identifies a reasoning record or tool exchange; reasoning attached to a tool call must precede its exchange in the same block. Reasoning attached to the completed final answer after tool execution is a standalone reference whose record includes the rest of that native assistant response and the original reasoning positions. Consecutive directives share one block. When answer text and native reasoning arrive together in a completed Responses or Messages payload, the reference precedes the Assistant block; earlier streamed text remains in arrival order. A standalone final-answer reference can precede or follow its visible assistant text, and both restore one native assistant response. `Reasoning` blocks contain display text and are never expanded into native history. References resolve against this sidecar only; they are not model-facing text. Missing, malformed, duplicated, incompatible, or incomplete tool references fail explicitly. Unreferenced records are ignored.
+
+`[textllm].tools_display` selects `"comment"` (default) or `"block"` for newly written Tools blocks. Comment mode places a standalone `<!--` line before the Tools marker and a standalone `-->` line after its last reference, retaining heading levels and grouped directives. The reader accepts either form regardless of the setting, including mixed files, and consumes only this reserved wrapper without adding its delimiters to neighboring messages. Unclosed comments, nested comments, and multiple role blocks inside a Tools comment fail explicitly. The writer closes comments before another role, token notes, and the trailing User marker on success, failure, or interruption. Existing files are not rewritten; older readers require visible blocks. Ordinary HTML comments keep their existing behavior.
+
+Markdown owns reference order/inclusion and displayed assistant text. Native tool call/result grouping and continuation data come from the referenced record, with no duplicate assistant text. Removing a reference excludes its record; it does not execute or undo any operation. Displayed reasoning remains local-only. Native reasoning is restored from its explicit directive under `Tools`, either combined with the following tool exchange or restored as a completed assistant response. Its original positions and assistant phase are preserved, and it is sent once. Deleting that directive excludes the reasoning; deleting an exchange requires deleting its associated reasoning directive too. There is no implicit reasoning fallback or alternative reference syntax. Title requests use ordinary user/assistant text and exclude both reference roles.
+
+See [MCP tools and sidecars](../mcp.md) for connection settings, limits, supported outputs, and paired file lifecycle rules.
+
+
+### Sidecar Record Version 1
+
+Each JSONLiteDB record has an `id` UUID string (UUIDv7 for new records), `version = 1`, and a `kind`. Unknown versions fail explicitly. The record kind determines replay behavior; the directive description does not.
+
+| Kind | Stored data |
+| --- | --- |
+| `tools` | Backend/model, round sequence, native assistant payload without reasoning, calls with executor/server/tool identities, definitions, results, and execution status. Optional `reasoning_key` and `reasoning_positions` associate a separate reasoning record. |
+| `reasoning` | Backend, readable `text` when returned, native reasoning payload, and completion status. Final reasoning after tool execution also includes `assistant_native` and `reasoning_positions` to restore that assistant response. |
+
+Tool records progress through `pending`, `running`, and `complete`; uncertain execution is marked `unknown`. `running_call` identifies the active call until successful completion. Only complete exchanges with matching call/result IDs are replayable. Each result retains the original `result`, the model-facing `output`, `call_id`, and `is_error`; these are persisted before the next model request.
+
+Reasoning records are `partial` while streaming after tool execution starts and `complete` when a response finishes. Before the first tool request, reasoning is buffered without creating a database. Completion native reasoning uses provider reasoning fields; Responses and Messages retain native item/block lists and their original positions. Sidecar records are committed before references are written; incomplete and unreferenced records can remain after interruption. Markdown and database writes are not jointly atomic.

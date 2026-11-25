@@ -1,9 +1,10 @@
 # {AUTO_TITLE}
 
 ```toml
+[llm]
 # Optional Settings
 # Temperature is omitted because adaptive thinking does not support it.
-model = 'anthropic/claude-sonnet-4-6'
+model = 'anthropic/claude-haiku-5-5'
 max_tokens = 16000
 tools = [{ type = "web_search_20260318", name = "web_search", max_uses = 5 }]
 thinking = { type = "adaptive" }

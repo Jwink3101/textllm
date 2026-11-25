@@ -109,8 +109,9 @@ def cli(argv=None):
 
     settings.add_argument(
         "--list-templates",
-        action="store_true",
-        help="List named templates, their paths and sources, then exit.",
+        action="count",
+        default=0,
+        help="List template names and exit. Repeat to include paths, sources, and shadowed entries.",
     )
 
     response.add_argument(
@@ -220,10 +221,15 @@ def cli(argv=None):
 
     args = parser.parse_args(argv)
     overrides = {}
+    legacy_overrides = False
     for fragment in args.override:
         try:
-            overrides = config._merge_settings(overrides, tomllib.loads(fragment))
-        except tomllib.TOMLDecodeError as error:
+            parsed_override = tomllib.loads(fragment)
+            legacy_overrides |= config._has_legacy_settings(parsed_override)
+            overrides = config._merge_settings(
+                overrides, config._normalize_settings(parsed_override)
+            )
+        except ValueError as error:
             parser.error(f"Invalid --override TOML: {error}")
     local_overrides = overrides.get("textllm", {})
     if not isinstance(local_overrides, dict):
@@ -286,7 +292,7 @@ def cli(argv=None):
             log.info(f"env file {args.env!r} not loaded or found")
 
     if args.list_templates:
-        status = _list_templates()
+        status = _list_templates(details=args.list_templates >= 2)
         if status:
             sys.exit(status)
         return
@@ -342,6 +348,23 @@ def cli(argv=None):
             rendered_template = CONFIG.render_template(
                 template_text, header_level=template_header_level
             )
+            template_effective = config._merge_settings(
+                config._normalize_settings(
+                    Conversation.read_settings(rendered_template)
+                ),
+                overrides,
+            )
+            from .tools import mcp_config, tool_limits
+
+            if edit_mode:
+                # Creating a template alone must not require runtime variables.
+                resolved = config._resolve_settings(template_effective)
+                local = resolved.get("textllm", {})
+                mcp_config(local.get("mcp", []), expand=False)
+                tool_limits(local.get("tools", {}))
+            if os.path.lexists(str(filepath) + ".db"):
+                if not new_temp:
+                    raise FileExistsError("New conversation has an existing sidecar")
             if template_header_level is None and "{header}" in template_text:
                 template_settings = Conversation.read_settings(rendered_template).get(
                     "textllm", {}
@@ -364,6 +387,10 @@ def cli(argv=None):
             Path(filepath).parent.mkdir(parents=True, exist_ok=True)
             while True:
                 try:
+                    if os.path.lexists(str(filepath) + ".db"):
+                        raise FileExistsError(
+                            "Temporary conversation sidecar collision"
+                        )
                     with open(filepath, "xt") as fp:
                         fp.write(rendered_template)
                     break
@@ -390,11 +417,35 @@ def cli(argv=None):
         if kind == "temp":
             log.info("Temporary conversation: %r", filepath)
 
+        # Validate effective MCP settings and references before appending a CLI
+        # prompt or invoking an editor on an existing conversation.
+        validation_overrides = {
+            "llm": {
+                k: v
+                for k, v in overrides.items()
+                if k not in config._LOCAL_SETTINGS_TABLES
+            },
+            **{
+                k: v for k, v in overrides.items() if k in config._LOCAL_SETTINGS_TABLES
+            },
+        }
+        Conversation(filepath, overrides=validation_overrides)
         if edit_mode and not file_edit(filepath, prompt=args.prompt, editor=args.edit):
             # edit returns True iff it was modified.
             raise ValueError("File not modified")
 
-        convo = Conversation(filepath, overrides=overrides)
+        canonical_overrides = {
+            "llm": {
+                k: v
+                for k, v in overrides.items()
+                if k not in config._LOCAL_SETTINGS_TABLES
+            },
+            **{
+                k: v for k, v in overrides.items() if k in config._LOCAL_SETTINGS_TABLES
+            },
+        }
+        convo = Conversation(filepath, overrides=canonical_overrides)
+        convo._legacy_overrides = legacy_overrides
 
         if args.title != "off":
             convo.set_title()  # Will do nothing if AUTO_TITLE not in the top line

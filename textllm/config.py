@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import sys
 from copy import deepcopy
 from datetime import datetime
@@ -21,7 +22,8 @@ TEMPLATE = """\
 
 ```toml
 # Optional Settings
-temperature = {temperature}
+[llm]
+# temperature = {temperature}
 model = {model!r}
 ```
 
@@ -36,8 +38,8 @@ You are an expert assistant. Provide concise, accurate answers.
 """
 
 TEMPLATE_PLACEHOLDER_PATTERN = re.compile(
-    r"\{(?P<escaped>\{(?:AUTO_TITLE|header|temperature|model|now|version)(?:!r)?\})\}"
-    r"|\{(?P<name>AUTO_TITLE|header|temperature|model|now|version)(?P<repr>!r)?\}"
+    r"(?<!\$)\{(?P<escaped>\{(?:AUTO_TITLE|header|temperature|model|now|version)(?:!r)?\})\}"
+    r"|(?<!\$)\{(?P<name>AUTO_TITLE|header|temperature|model|now|version)(?P<repr>!r)?\}"
 )
 
 
@@ -49,6 +51,77 @@ def _merge_settings(base, overrides):
             merged[key] = _merge_settings(merged[key], value)
         else:
             merged[key] = deepcopy(value)
+    return merged
+
+
+def _resolve_settings(settings):
+    """Expand environment references in parsed string values exactly once.
+
+    Work on a copy after sources are merged. Split MCP command strings before
+    expansion so environment values cannot change argument boundaries.
+    """
+    settings = deepcopy(settings)
+    local = settings.get("textllm", {})
+    if isinstance(local, dict) and isinstance(local.get("mcp"), list):
+        for server in local["mcp"]:
+            if isinstance(server, dict) and isinstance(server.get("command"), str):
+                server["command"] = shlex.split(server["command"])
+    environment = dict(os.environ)
+
+    def replace(match):
+        name = match.group(2)
+        if match.group(1):
+            return "${" + name + "}"
+        if name not in environment:
+            raise ValueError(f"Missing environment variable in TOML settings: {name}")
+        return environment[name]
+
+    def resolve(value):
+        if isinstance(value, dict):
+            return {key: resolve(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [resolve(item) for item in value]
+        if isinstance(value, str):
+            return re.sub(r"(\$)?\$\{([A-Za-z_][A-Za-z0-9_]*)\}", replace, value)
+        return value
+
+    return resolve(settings)
+
+
+# Removal checklist: docs/migration_llm_settings.md#maintainer-checklist-for-removing-legacy-support
+# Add future application tables here; legacy root-level provider keys remain valid.
+_LOCAL_SETTINGS_TABLES = {"textllm"}
+_LEGACY_SETTINGS_WARNING = (
+    "Root-level model settings are deprecated; move them under [llm] "
+    "(including nested tables, e.g. [llm.reasoning]). Keep [textllm] unchanged. "
+    "See docs/migration_llm_settings.md."
+)
+
+
+def _has_legacy_settings(settings):
+    return bool(settings.keys() - _LOCAL_SETTINGS_TABLES - {"llm"})
+
+
+def _normalize_settings(settings):
+    """Return independent internal settings with the provider table unpacked."""
+    provider = settings.get("llm", {})
+    if not isinstance(provider, dict):
+        raise ValueError("llm must be a TOML table")
+    for name in _LOCAL_SETTINGS_TABLES:
+        if name in settings and not isinstance(settings[name], dict):
+            raise ValueError(f"{name} must be a TOML table")
+    reserved = provider.keys() & (_LOCAL_SETTINGS_TABLES | {"llm"})
+    if reserved:
+        raise ValueError(
+            f"Reserved settings cannot appear inside [llm]: {sorted(reserved)}"
+        )
+    legacy = {
+        k: v for k, v in settings.items() if k not in _LOCAL_SETTINGS_TABLES | {"llm"}
+    }
+    merged = _merge_settings(legacy, provider)
+    for name in _LOCAL_SETTINGS_TABLES:
+        if name in settings:
+            merged[name] = deepcopy(settings[name])
     return merged
 
 
@@ -203,7 +276,7 @@ def _read_template(selector):
         ) from exc
 
 
-def _list_templates():
+def _list_templates(details=False):
     registrations = _registered_templates()
     failed = False
     try:
@@ -216,8 +289,9 @@ def _list_templates():
         registered = name in registrations
         path = registrations[name] if registered else discovered[name]
         source = _NAMED_TEMPLATE_PREFIX + name if registered else "TEXTLLM_TEMPLATE_DIR"
-        print(f"{json.dumps('@' + name)} -> {json.dumps(path)} [{source}]")
-        if registered and name in discovered:
+        selector = json.dumps('@' + name)
+        print(f"{selector} -> {json.dumps(path)} [{source}]" if details else selector)
+        if details and registered and name in discovered:
             print(f"  overrides {json.dumps(discovered[name])} [TEXTLLM_TEMPLATE_DIR]")
         try:
             _validate_template_name(name)

@@ -21,28 +21,23 @@ The completion backend accepts any-llm's normalized `reasoning_effort` setting f
 ### Anthropic
 
 ```toml
-model = "anthropic/claude-sonnet-4-6"
+[llm]
+model = "anthropic/claude-haiku-5-5"
 reasoning_effort = "medium"
 max_tokens = 4000
 ```
 
 For current adaptive-thinking models, any-llm maps an explicit `reasoning_effort` to native `thinking = { type = "adaptive" }` and `output_config.effort`. Exact supported effort levels remain model-dependent.
 
-Claude 4.5 models use legacy budget-based thinking and do not support adaptive thinking. Configure those models directly instead of setting an explicit normalized effort:
-
-```toml
-model = "anthropic/claude-sonnet-4-5"
-reasoning_effort = "auto"
-max_tokens = 16000
-thinking = { type = "enabled", budget_tokens = 8000 }
-```
+Older models may require budget-based thinking instead of adaptive thinking; follow the selected model's documentation.
 
 ### OpenRouter
 
 The part after `openrouter/` is the OpenRouter model identifier:
 
 ```toml
-model = "openrouter/openai/gpt-5.5"
+[llm]
+model = "openrouter/openai/gpt-6-luna"
 reasoning_effort = "high"
 max_completion_tokens = 4000
 ```
@@ -54,7 +49,8 @@ OpenRouter support depends on the routed model. textllm passes the normalized se
 The Responses API uses a `reasoning` object rather than `reasoning_effort`:
 
 ```toml
-model = "openai/gpt-5.5"
+[llm]
+model = "openai/gpt-6-luna"
 reasoning = { effort = "high" }
 
 [textllm]
@@ -66,7 +62,8 @@ The backend must be selected explicitly. This avoids surprising behavior when sw
 To request and retain a provider-supplied reasoning summary as a local annotation:
 
 ```toml
-model = "openai/gpt-5.5"
+[llm]
+model = "openai/gpt-6-luna"
 reasoning = { effort = "high", summary = "auto" }
 
 [textllm]
@@ -77,20 +74,22 @@ reasoning_summary = "block"
 For OpenAI Responses, these settings have separate purposes:
 
 - `reasoning.effort = "high"` controls reasoning effort. It does not request a visible summary.
-- `reasoning.summary = "auto"` requests a reasoning summary from OpenAI. In the example above, this is `summary = "auto"` inside the top-level `reasoning` object.
+- `reasoning.summary = "auto"` requests a reasoning summary from OpenAI. In the example above, this is `summary = "auto"` inside the `llm.reasoning` object.
 - `[textllm].reasoning_summary = "block"` tells textllm to save any returned summary in the conversation file. It does not ask the provider to generate one.
 
-If you see reasoning tokens in the usage report but no `Reasoning` block, check that the top-level setting includes `summary = "auto"`. Reasoning-token counts measure internal model work and do not imply that a summary was requested or returned. textllm can only save summary text actually returned by the provider.
+If you see reasoning tokens in the usage report but no `Reasoning` block, check that `llm.reasoning` includes `summary = "auto"`. Reasoning-token counts measure internal model work and do not imply that a summary was requested or returned. textllm can only save summary text actually returned by the provider.
 
 When updating a template, remember that it only affects new conversations. Update the TOML in an existing conversation file to change its settings.
 
 The local `reasoning_summary` setting accepts:
 
-- `omit`, the default, which does not retain the summary.
+- `omit`, the default, which does not display the summary. Reasoning associated with tool calls is still retained in their sidecar.
 - `block`, which writes it to local-only `--- Reasoning ---` blocks in stream-event order.
-- `stderr`, which logs it when the selected CLI verbosity displays informational logs.
+- `stderr`, which writes it directly to standard error after the response completes, independently of CLI verbosity.
 
 These are summaries intentionally returned by the provider. textllm does not request or persist raw hidden chain-of-thought.
+
+Sidecars are reserved for MCP tool-call history and future client tool integrations. Reasoning alone never creates a sidecar, even with MCP configured. A sidecar is created only after the model requests a tool call. Reasoning returned during that tool exchange, including the final answer after execution, is retained for native replay in all display modes. Reasoning from a turn without tool calls remains display-only and is not replayed. This is the current storage policy, not a requirement of the sidecar format; revisit it if general provider-native state replay is added. A `Reasoning` block contains display text only and is written only in `block` mode. Native reasoning is selected by a `[@sidecar reasoning](uuid)` directive under `Tools`, paired with an exchange when making tool calls or standalone with the final answer following tool execution; see [MCP tools and sidecars](mcp.md).
 
 With `block`, reasoning and answer deltas are persisted as they arrive. A stream can therefore produce `Reasoning`, `Assistant`, `Reasoning`, and `Assistant` blocks in sequence. Reasoning remains excluded from later requests, while assistant segments separated by reasoning are merged into one model-facing assistant message on replay. Only assistant text is streamed to standard output.
 
@@ -99,7 +98,8 @@ With `block`, reasoning and answer deltas are persisted as they arrive. A stream
 any-llm 1.27.0 and newer supports OpenRouter's native OpenResponses endpoint. Keep the full OpenRouter catalog identifier after the `openrouter/` provider prefix:
 
 ```toml
-model = "openrouter/anthropic/claude-sonnet-4.6"
+[llm]
+model = "openrouter/anthropic/claude-haiku-5.5"
 reasoning = { effort = "medium" }
 
 [textllm]
@@ -113,10 +113,11 @@ OpenRouter reads `$OPENROUTER_API_KEY` normally. Its Responses request schema fi
 
 Use `backend = "messages"` when you want native Anthropic Messages settings and stream events rather than the completion compatibility layer. `max_tokens` is required by this API.
 
-Claude Sonnet 4.6 with adaptive thinking and medium effort:
+Claude Haiku 5.5 with adaptive thinking and medium effort:
 
 ```toml
-model = "anthropic/claude-sonnet-4-6"
+[llm]
+model = "anthropic/claude-haiku-5-5"
 max_tokens = 16000
 thinking = { type = "adaptive" }
 output_config = { effort = "medium" }
@@ -126,25 +127,13 @@ backend = "messages"
 reasoning_summary = "block"
 ```
 
-Claude 4.5 and older supported reasoning models require manual extended thinking with a token budget:
-
-```toml
-model = "anthropic/claude-sonnet-4-5"
-max_tokens = 16000
-thinking = { type = "enabled", budget_tokens = 8000 }
-
-[textllm]
-backend = "messages"
-reasoning_summary = "block"
-```
-
 Do not combine an adaptive `thinking` object with `budget_tokens`. Effort belongs in `output_config`, not in `thinking`. Model support and valid effort levels vary, and thinking consumes the same `max_tokens` output allowance as answer text.
 
-Anthropic sends thinking content in `thinking_delta` stream events. textllm treats provider-returned thinking text as its normalized reasoning-summary stream: `omit` discards it, `stderr` logs it, and `block` writes it to local-only `Reasoning` blocks in event order. This is content deliberately exposed by the provider, not access to unreturned hidden chain-of-thought. Reasoning blocks are excluded from later requests, and textllm does not preserve Anthropic thinking signatures or build a client-side tool loop.
+Anthropic sends thinking content in `thinking_delta` stream events. textllm treats provider-returned thinking text as its normalized reasoning-summary stream: `omit` omits it from display, `stderr` writes it directly to standard error after the response completes, and `block` writes it to local-only `Reasoning` blocks in event order. This is content deliberately exposed by the provider, not access to unreturned hidden chain-of-thought. Reasoning blocks are excluded from later requests, and textllm retains returned thinking signatures associated with tool calls in the sidecar and can run a client-side MCP tool loop. Native reasoning required for a tool exchange is replayed from that exchange, rather than from displayed reasoning text. See [MCP tools and sidecars](mcp.md).
 
 The Markdown request is adapted to the Messages shape before any-llm is called:
 
-- `System` and `Developer` blocks are joined, in order, into the separate Messages `system` parameter. A top-level TOML `system` setting is placed before them.
+- `System` and `Developer` blocks are joined, in order, into the separate Messages `system` parameter. A TOML `llm.system` setting is placed before them.
 - `User` and `Assistant` blocks become the Messages `messages` list.
 - Local and embedded images become Anthropic base64 image sources. HTTP(S) images become URL image sources.
 - `Note` and `Reasoning` blocks remain local and are removed before conversion.
@@ -156,7 +145,8 @@ any-llm can expose its Messages interface for other providers through a Chat Com
 OpenRouter exposes an Anthropic-compatible `/api/v1/messages` endpoint. Select it with an OpenRouter-prefixed model and `$OPENROUTER_API_KEY`:
 
 ```toml
-model = "openrouter/anthropic/claude-sonnet-4.6"
+[llm]
+model = "openrouter/anthropic/claude-haiku-5.5"
 max_tokens = 16000
 thinking = { type = "adaptive" }
 output_config = { effort = "medium" }
@@ -167,7 +157,7 @@ backend = "messages"
 reasoning_summary = "block"
 ```
 
-With any-llm 1.27.0, the ordinary `provider="openrouter"` Messages implementation uses any-llm's Chat Completions compatibility bridge even though OpenRouter now has a native Messages endpoint. textllm avoids that downgrade: for this backend and model prefix, it configures any-llm's Anthropic transport with OpenRouter's `https://openrouter.ai/api` base URL and the OpenRouter key. The request therefore reaches `https://openrouter.ai/api/v1/messages`, while the model id remains `anthropic/claude-sonnet-4.6`. Anthropic-format thinking, image, and tool fields are preserved; actual model and routed-provider support still determines which features succeed.
+With any-llm 1.27.0, the ordinary `provider="openrouter"` Messages implementation uses any-llm's Chat Completions compatibility bridge even though OpenRouter now has a native Messages endpoint. textllm avoids that downgrade: for this backend and model prefix, it configures any-llm's Anthropic transport with OpenRouter's `https://openrouter.ai/api` base URL and the OpenRouter key. The request therefore reaches `https://openrouter.ai/api/v1/messages`, while the model id remains `anthropic/claude-haiku-5.5`. Anthropic-format thinking, image, and tool fields are preserved; actual model and routed-provider support still determines which features succeed.
 
 An explicit TOML `api_key` or `api_base` overrides the corresponding default, although keeping credentials in `$OPENROUTER_API_KEY` is recommended. OpenRouter-specific body fields that conflict with any-llm parameter names can be placed in `extra_body`; for example, routing preferences can use `extra_body = { provider = { sort = "price" } }`.
 
@@ -176,7 +166,8 @@ An explicit TOML `api_key` or `api_base` overrides the corresponding default, al
 OpenAI-hosted web search uses the `web_search` Responses tool:
 
 ```toml
-model = "openai/gpt-5.5"
+[llm]
+model = "openai/gpt-6-luna"
 reasoning = { effort = "medium", summary = "auto" }
 tools = [{ type = "web_search" }]
 max_tool_calls = 5
@@ -189,7 +180,8 @@ reasoning_summary = "block"
 OpenRouter provides a namespaced `openrouter:web_search` server tool that can be used with models from different upstream providers:
 
 ```toml
-model = "openrouter/anthropic/claude-sonnet-4.6"
+[llm]
+model = "openrouter/anthropic/claude-haiku-5.5"
 reasoning = { effort = "medium" }
 tools = [{ type = "openrouter:web_search", parameters = { max_results = 5 } }]
 max_tool_calls = 5
@@ -202,7 +194,8 @@ reasoning_summary = "block"
 Anthropic-hosted web search is available through the Messages backend. Anthropic versions server-tool schemas by date; this example selects the `20260318` schema:
 
 ```toml
-model = "anthropic/claude-sonnet-4-6"
+[llm]
+model = "anthropic/claude-haiku-5-5"
 max_tokens = 16000
 thinking = { type = "adaptive" }
 output_config = { effort = "medium" }
@@ -230,7 +223,8 @@ The source list becomes part of the assistant message and is therefore visible o
 Automatic-title calls use the selected backend but always remove `tools`, `tool_choice`, and `max_tool_calls`. A title will therefore never trigger web search. Optional title-specific provider settings can reduce reasoning cost:
 
 ```toml
-model = "openai/gpt-5.5"
+[llm]
+model = "openai/gpt-6-luna"
 reasoning = { effort = "high", summary = "auto" }
 tools = [{ type = "web_search" }]
 
@@ -246,13 +240,14 @@ Values under `[textllm.title]` override provider settings only for automatic-tit
 You can also select a separate model for titles:
 
 ```toml
-model = "openai/gpt-5.5"
+[llm]
+model = "openai/gpt-6-luna"
 
 [textllm]
 backend = "responses"
 
 [textllm.title]
-model = "openai/gpt-4o-mini"
+model = "openai/gpt-6-luna"
 ```
 
 The title model uses the conversation's backend. Other provider settings are inherited unless overridden, so they must be supported by the title model and its provider. A different provider prefix is allowed when that provider supports the selected backend and the inherited settings.
@@ -279,7 +274,7 @@ from any_llm import responses
 
 events = responses(
     provider="openai",
-    model="gpt-5.5",
+    model="gpt-6-luna",
     input_data="Analyze the trade-offs.",
     reasoning={"effort": "high", "summary": "auto"},
     stream=True,
@@ -296,7 +291,7 @@ from any_llm import messages
 
 events = messages(
     provider="anthropic",
-    model="claude-sonnet-4-6",
+    model="claude-haiku-5-5",
     messages=[{"role": "user", "content": "Analyze the trade-offs."}],
     max_tokens=16000,
     thinking={"type": "adaptive"},
@@ -315,7 +310,7 @@ from any_llm import responses
 
 events = responses(
     provider="openrouter",
-    model="anthropic/claude-sonnet-4.6",
+    model="anthropic/claude-haiku-5.5",
     input_data="Analyze the trade-offs.",
     reasoning={"effort": "medium", "summary": "auto"},
     stream=True,
@@ -333,7 +328,7 @@ events = messages(
     provider="anthropic",
     api_base="https://openrouter.ai/api",
     api_key=os.environ["OPENROUTER_API_KEY"],
-    model="anthropic/claude-sonnet-4.6",
+    model="anthropic/claude-haiku-5.5",
     messages=[{"role": "user", "content": "Analyze the trade-offs."}],
     max_tokens=16000,
     thinking={"type": "adaptive"},
@@ -345,16 +340,16 @@ events = messages(
 ## Limitations
 
 - Responses support depends on the any-llm provider. The completion backend remains the portable default.
-- The Messages backend only persists final assistant text, URL citations, and an optional local `Reasoning` block. It does not preserve thinking signatures, tool-use blocks, arbitrary content blocks, or provider-side state for later turns.
-- textllm replays the readable Markdown conversation on every call. It does not use `previous_response_id`, remote conversation storage, encrypted reasoning state, or provider-side persistent state.
-- Only provider-hosted tools are transported. textllm does not execute arbitrary local function tools or implement a client-side agent loop.
+- Messages tool exchanges preserve native tool-use blocks and returned thinking signatures in the sidecar. Standalone reasoning display stays local-only. Other media results and general provider-side state are not supported.
+- textllm replays Markdown and explicitly referenced native tool history on every call, including signed/encrypted reasoning belonging to tool exchanges. It does not use `previous_response_id` or remote conversation storage. Reasoning from turns without tool calls is not retained for native replay.
+- Provider-hosted tools and client-executed MCP tools are supported. Other local tool executors are not implemented. See [MCP tools and sidecars](mcp.md).
 - Citations received before interruption may not have reached the completed response, so a partial streamed answer can lack its final source list.
 
 ## Further Reading
 
 - [textllm prompt caching guide](prompt_caching.md)
 - [any-llm documentation](https://docs.mozilla.ai/any-llm/)
-- [OpenAI reasoning model guidance](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.5)
+- [OpenAI reasoning model guidance](https://developers.openai.com/api/docs/guides/latest-model)
 - [OpenAI web search guide](https://developers.openai.com/api/docs/guides/tools-web-search)
 - [OpenRouter Responses reference](https://openrouter.ai/docs/api/api-reference/responses/create-responses)
 - [OpenRouter web search guide](https://openrouter.ai/docs/guides/features/server-tools/web-search)
@@ -363,3 +358,5 @@ events = messages(
 - [Anthropic adaptive thinking guide](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking)
 - [Anthropic web search tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool)
 - [Anthropic tool reference](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-reference)
+
+When answer text and native reasoning arrive in the same completed Responses or Messages payload, the reasoning reference is written before the Assistant block. Consecutive sidecar references share a Tools block. Text that streamed before the completed payload keeps its original position.

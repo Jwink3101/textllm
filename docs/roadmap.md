@@ -10,7 +10,7 @@ The current typed-stream scope includes provider-returned reasoning content, pro
 
 ## Reasoning and Provider Settings
 
-Conversation TOML passes provider settings through to any-llm. The reserved `[textllm]` table holds local behavior without creating a provider-setting allowlist.
+Conversation TOML passes provider settings under `[llm]` through to any-llm. The reserved `[textllm]` table holds local behavior without creating a provider-setting allowlist.
 
 The `[textllm.title]` table provides title-specific overrides, including a separate model while retaining the conversation's backend. See [Automatic Titles](reasoning_and_tools.md#automatic-titles). Future versions may add lower-cost defaults if those defaults justify additional local configuration.
 

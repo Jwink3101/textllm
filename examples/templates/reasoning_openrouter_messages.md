@@ -1,7 +1,8 @@
 # {AUTO_TITLE}
 
 ```toml
-model = "openrouter/anthropic/claude-sonnet-4.6"
+[llm]
+model = "openrouter/anthropic/claude-haiku-5.5"
 # Native Anthropic-format thinking through OpenRouter Messages.
 max_tokens = 16000
 thinking = { type = "adaptive" }

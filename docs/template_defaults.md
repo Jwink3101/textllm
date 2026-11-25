@@ -59,7 +59,7 @@ export TEXTLLM_NAMED_TEMPLATE_special="$HOME/work/custom template.md"
 
 ### Listing and Validation
 
-`--list-templates` loads the environment, lists effective names alphabetically with paths and sources, and exits. It also shows directory entries shadowed by explicit registrations. Names and paths use quoted, escaped strings so whitespace remains unambiguous.
+`--list-templates` loads the environment, lists effective names alphabetically, and exits. Repeat the flag (`--list-templates --list-templates`) to include paths, sources, and directory entries shadowed by explicit registrations. Two or more occurrences show the same details. Names and paths use quoted, escaped strings so whitespace remains unambiguous.
 
 Listing validates effective template files, reports broken entries without hiding the remaining entries, and returns a nonzero status for broken registrations, unreadable files, or directory discovery errors. With no configured templates, it prints configuration guidance and succeeds. It does not create a conversation, read stdin, launch an editor, or call a model, and needs no provider credentials.
 
@@ -68,7 +68,7 @@ Listing validates effective template files, reports broken entries without hidin
 Set the defaults in the environment or an env file:
 
 ```dotenv
-TEXTLLM_DEFAULT_MODEL=openai/gpt-4o-mini
+TEXTLLM_DEFAULT_MODEL=openai/gpt-6-luna
 TEXTLLM_DEFAULT_TEMPERATURE=0.2
 TEXTLLM_DEFAULT_HEADER_LEVEL=2
 TEXTLLM_TEMPLATE_FILE=templates/code-review.md
@@ -91,7 +91,7 @@ You are a concise code reviewer. Focus on correctness, regressions, and missing 
 
 ````
 
-When a new conversation is created from this template, the conversation file will not contain `model` or `temperature`. At call time, textllm uses `TEXTLLM_DEFAULT_MODEL` and sends no temperature parameter. `TEXTLLM_DEFAULT_TEMPERATURE` only fills the `{temperature}` placeholder; the built-in template includes that placeholder, so remove or comment out its temperature line for models that reject it.
+When a new conversation is created from this template, the conversation file will not contain `model` or `temperature`. At call time, textllm uses `TEXTLLM_DEFAULT_MODEL` and sends no temperature parameter. `TEXTLLM_DEFAULT_TEMPERATURE` only fills the `{temperature}` placeholder and defaults to `1.0`. The built-in template writes it as a comment (`# temperature = 1.0`, or the configured environment value), so new conversations use the provider default. Uncomment the line under `[llm]` to send an explicit temperature. Custom templates can still include an active temperature setting.
 
 `TEXTLLM_DEFAULT_HEADER_LEVEL` controls newly appended role markers unless the conversation sets `[textllm].header_level` or the invocation uses `--header-level`. It also controls initial markers in the built-in template. In the explicit template above, the initial markers stay plain because they do not use `{header}`. To apply the environment default to those markers too, use the pattern below.
 
@@ -126,6 +126,7 @@ Use placeholders when you want each new conversation to record the default model
 # {AUTO_TITLE}
 
 ```toml
+[llm]
 model = "{model}"
 temperature = {temperature}
 ```
@@ -152,7 +153,8 @@ If the template includes a setting, it overrides the environment default for con
 # !!AUTO TITLE!!
 
 ```toml
-model = "openai/gpt-5.5"
+[llm]
+model = "openai/gpt-6-luna"
 temperature = 1.0
 ```
 
@@ -166,12 +168,19 @@ You are an expert assistant. Provide concise, accurate answers.
 
 Use this when the template is tied to a specific provider or model. Otherwise, omit `model` so the same template can follow whichever default model is configured for the current shell, `.env`, `TEXTLLM_ENV_PATH`, or `--env` file.
 
+## Runtime Environment References
+
+TOML string values can contain `${NAME}` references, evaluated once against the loaded environment when the conversation is executed. They work in nested tables/arrays, provider settings, local settings, and MCP configuration. New template-only conversations preserve these references without requiring the variables to be set. Missing variables are errors at execution. Environment expansion never rewrites saved TOML, does not recursively expand substituted values, and leaves non-string types and keys alone. `$${NAME}` escapes a literal reference.
+
+For example, `[llm]` with `model = "${CHAT_MODEL}"` chooses the environment's model on each invocation. `{model}` is a creation-time template placeholder and records its rendered value in the file. See [configuration-wide environment references](../readme.md#environment-references-in-toml) for types, escaping, override precedence, and execution-time requirements.
+
 ## Unsupported Placeholders
 
 Only the placeholders listed above are filled. Unknown placeholders are left as written:
 
 ````markdown
 ```toml
+[llm]
 metadata = "{project_name}"
 ```
 ````

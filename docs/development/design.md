@@ -1,8 +1,8 @@
 # textllm Design
 
-textllm is a small command-line tool for working with LLM conversations as ordinary Markdown files. Its central design choice is that the file is the user interface and the persistent state. The CLI reads the file, converts it into a model request, streams a response, and appends the result back to the same file.
+textllm is a small command-line tool for working with LLM conversations as ordinary Markdown files. Its central design choice is that Markdown is the user interface and controls replay, with an adjacent sidecar only for client tool history. The CLI reads the file, converts it into a model request, streams a response, and appends the result back to the same file.
 
-The tool is intentionally narrow. It is not a chat server, workspace manager, notebook, database-backed client, or provider abstraction layer of its own. any-llm handles provider integration; textllm handles the text-file workflow around it.
+The tool is intentionally narrow. It is not a chat server, workspace manager, notebook, or provider abstraction layer of its own. Ordinary conversations use Markdown alone; client tool exchanges additionally use a per-conversation sidecar. any-llm handles provider integration; textllm handles the text-file workflow around it.
 
 ## Goals
 
@@ -18,7 +18,7 @@ The tool is intentionally narrow. It is not a chat server, workspace manager, no
 - Manage multiple conversations in an application database.
 - Provide a graphical chat interface.
 - Normalize every provider feature into a textllm-specific settings schema.
-- Store hidden conversation state outside the Markdown file.
+- Replay provider-native reasoning from turns without tool calls; the current sidecar policy is limited to client tool history.
 - Preserve arbitrary rich assistant output that cannot be represented as readable Markdown.
 - Implement model routing, retries, pricing policy, or account management beyond what any-llm provides.
 
@@ -43,7 +43,7 @@ Creating a new file without edit or prompt input stops after writing the templat
 
 ### Package Layout
 
-The implementation lives in the `textllm/` package. `config.py` handles environment defaults, template discovery/rendering, and recursive settings merging; `markdown.py` handles role markers, settings parsing, message merging, and file directives; `backends.py` adapts model requests and streams into normalized events. `conversation.py` coordinates model calls with conversation-file updates, `files.py` handles filenames and editor operations, `state.py` handles temporary locations and JSON continuation pointers, and `cli.py` handles arguments and command orchestration.
+The implementation lives in the `textllm/` package. `config.py` handles environment defaults, template discovery/rendering, and recursive settings merging; `markdown.py` handles role markers, settings parsing, message merging, and file directives; `backends.py` adapts model requests and streams into normalized events. `conversation.py` coordinates model calls with conversation-file updates, `files.py` handles filenames and editor operations, `state.py` handles temporary locations and JSON continuation pointers, and `cli.py` handles arguments and command orchestration. `tools.py` implements MCP configuration and execution, `tool_loop.py` orchestrates model/tool rounds, and `history.py` stores and replays sidecar records.
 
 `__init__.py` exposes the public API, including `Conversation`, `loads`, model adapters, and `cli`. `__main__.py` supports `python -m textllm`. The root `textllm.py` launcher puts its resolved directory first on the import path so it runs the adjacent checkout even when another version is installed or the working directory differs. Runtime dependencies are still required. `textllm/_version.py` supplies both the runtime version and setuptools metadata.
 
@@ -53,7 +53,7 @@ The launcher changes the import path only when executed, and refuses to run with
 
 The conversation file is the durable source of truth. It contains optional preamble content, optional TOML settings, and Markdown role blocks. The file format is described separately in [format_spec.md](format_spec.md).
 
-textllm should avoid keeping meaningful state anywhere else. Environment variables and command-line flags affect the current invocation, but the conversation history itself lives in the file.
+Ordinary conversation history lives in Markdown. MCP tool calls additionally require an adjacent `.db` sidecar for native calls, results, and associated reasoning; Markdown references determine which records participate in replay. Reasoning without tool calls never creates a sidecar. Environment variables and command-line flags affect the current invocation.
 
 `--continue` uses disposable JSON pointers to select the last regular or temporary file, independently of the working directory. `--temp` creates timestamp-named Markdown files under the system temporary directory and ignores rename flags. The JSON file contains paths only, not conversation content. See [continuation, temporary storage, and overrides](continue_temp_overrides.md) for details.
 
@@ -65,7 +65,9 @@ Template rendering is intentionally limited. Only documented placeholders are ex
 
 ### Settings
 
-Settings are loaded from the conversation's TOML block with a fallback model. Repeatable `-o` / `--override` TOML fragments recursively merge over those settings for the current invocation, without rewriting the saved TOML. Dedicated explicit flags take precedence. Arrays and scalar values replace earlier values. `model` is consumed by textllm to select the any-llm provider and model. The reserved `[textllm]` table controls backend selection, role-marker heading level, reasoning-summary handling, and title-specific overrides. Other settings are passed to any-llm.
+Settings are loaded from the conversation's TOML block with a fallback model. Repeatable `-o` / `--override` TOML fragments recursively merge over those settings for the current invocation, without rewriting the saved TOML. Dedicated explicit flags take precedence. Arrays and scalar values replace earlier values. `model` is consumed by textllm to select the any-llm provider and model. The reserved `[textllm]` table controls backend selection, role-marker heading level, reasoning-summary handling, and title-specific overrides. Provider settings under `[llm]` are unpacked and passed to any-llm. Legacy root-level provider settings remain supported with one deprecation warning per invocation. Normalize each override fragment before merging so command-line order wins across both formats.
+
+After source merging, parsed TOML string values undergo one environment substitution pass at execution; template-only creation preserves unresolved variables. See [environment references](format_spec.md#environment-references).
 
 This keeps textllm small and avoids maintaining a provider setting allowlist. It also means invalid or unsupported provider settings usually fail at the any-llm or provider layer.
 
@@ -89,23 +91,23 @@ Supported model roles are `system`, `developer`, `user`, and `assistant`. The fi
 
 When user messages contain standalone Markdown image lines, those lines are converted into multimodal content blocks. Local image paths are resolved relative to the conversation file and encoded as data URLs. HTTP(S) URLs and existing `data:` URLs are passed through. `[@attach optional description](target)` links represent generic file inputs. Their optional description remains text context and their target becomes a provider file block. `@attachment` is a compatibility alias. `[@include optional description](target)` reads a local UTF-8 text file and adds it after a labelled delimiter in the user text. These directives can appear inline in prose or on their own lines; reference-link forms work for both. Because the Markdown history is replayed on each call, prior attachments and included text are sent again with later turns.
 
-Assistant output is currently stored as text only.
+Readable assistant output is stored as Markdown text. Tool exchanges preserve additional native continuation data in explicitly referenced sidecar records.
 
 ### Model Boundary
 
 `iter_model_events()` is the main boundary between textllm and any-llm. It selects the `completion`, `responses`, or `messages` adapter and yields a small set of provider-independent `ModelEvent` values for answer text, reasoning summaries, tool status, citations, usage, and completion.
 
-The completion adapter retains `iter_completion_text()`, which calls `any_llm.completion()` with `stream=True`. This preserves the original and more portable backend. The Responses adapter calls `any_llm.responses()` with `stream=True`, converts image inputs to Responses content blocks, and normalizes its typed stream events. The Messages adapter calls `any_llm.messages()` with `stream=True`, hoists system and developer content into the separate system parameter, converts image inputs to Anthropic content blocks, and normalizes Messages stream events. OpenRouter-prefixed Messages calls select any-llm's Anthropic transport with OpenRouter's Anthropic-compatible base URL because any-llm 1.27.0's OpenRouter provider otherwise uses its generic Chat Completions bridge. Provider-specific response objects do not escape these adapters.
+The completion adapter retains `iter_completion_text()`, which calls `any_llm.completion()` with `stream=True`. This preserves the original and more portable backend. The Responses adapter calls `any_llm.responses()` with `stream=True`, converts image inputs to Responses content blocks, and normalizes its typed stream events. The Messages adapter calls `any_llm.messages()` with `stream=True`, hoists system and developer content into the separate system parameter, converts image inputs to Anthropic content blocks, and normalizes Messages stream events. OpenRouter-prefixed Messages calls select any-llm's Anthropic transport with OpenRouter's Anthropic-compatible base URL because any-llm 1.27.0's OpenRouter provider otherwise uses its generic Chat Completions bridge. Completed events carry JSON-serializable native continuation payloads for the tool loop. SDK models are serialized with wire aliases and omitted null fields; Python attribute names such as `async_` must not reach provider requests.
 
 In deterministic test mode, the same boundaries yield fake chunks or events instead of calling any-llm. The Responses and Messages fakes can emit reasoning-summary, web-search status, citation, and answer events. Tests still exercise file creation, parsing, image conversion, message merging, streaming collection, title logic, and CLI subprocess behavior.
 
 ### Reasoning and Hosted Tools
 
-The completion backend passes `reasoning_effort` through to any-llm. The Responses backend passes the native `reasoning` object and hosted-tool declarations through. The Messages backend passes Anthropic-style parameters such as `thinking`, `output_config`, and `tools`; it requires `max_tokens`, as the underlying interface does. Anthropic and OpenRouter handle this request through Messages endpoints, while other any-llm providers may bridge it through Chat Completions. Web search runs at the provider; textllm does not implement a search client or execute arbitrary local function tools.
+The completion backend passes `reasoning_effort` through to any-llm. The Responses backend passes the native `reasoning` object and hosted-tool declarations through. The Messages backend passes Anthropic-style parameters such as `thinking`, `output_config`, and `tools`; it requires `max_tokens`, as the underlying interface does. Anthropic and OpenRouter handle this request through Messages endpoints, while other any-llm providers may bridge it through Chat Completions. Web search runs at the provider; textllm does not implement a search client. MCP tools execute through a separate local executor and bounded orchestration loop.
 
-Answer deltas are written as assistant text while they arrive. URL citation annotations are collected, deduplicated, and appended as a Markdown `Sources` section after the answer. Provider-returned reasoning content may be omitted, logged, or streamed into local-only `Reasoning` blocks. In block mode, the file writer switches between `Reasoning` and `Assistant` blocks as the normalized event kind changes, preserving provider event order without sending reasoning to standard output. Messages `thinking_delta` events use this same normalized path. Unreturned hidden reasoning is not accessible or stored, and Anthropic thinking signatures are not persisted.
+Answer deltas are written as assistant text while they arrive. URL citation annotations are collected, deduplicated, and appended as a Markdown `Sources` section after the answer. Provider-returned reasoning content may be omitted from display, printed directly to stderr after a successful response independently of logging verbosity, or streamed into local-only `Reasoning` blocks. In block mode, the file writer switches between `Reasoning` and `Assistant` blocks as the normalized event kind changes, preserving provider event order without sending reasoning to standard output. Messages `thinking_delta` events use this same normalized path. Unreturned hidden reasoning is not accessible or stored. Returned thinking signatures and native reasoning are retained in sidecar history for tool continuation.
 
-The Markdown history remains the source of truth. Responses calls replay that history rather than relying on `previous_response_id` or provider-side conversation storage.
+Markdown controls the source history, including explicit references into a tool-history sidecar when present. Responses calls replay that history rather than relying on `previous_response_id` or provider-side conversation storage.
 
 ## File Update Behavior
 
@@ -164,4 +166,18 @@ Future work should preserve the text-file workflow:
 - Avoid adding dependencies unless they serve a concrete workflow need.
 - Document format changes in [format_spec.md](format_spec.md) before relying on them.
 
-Additional richer outputs, client-executed function tools, generated images, and provider state should be designed as explicit extensions. They should not be inferred from ordinary assistant text.
+Additional richer outputs, non-MCP client-executed tools, and generated images should be designed as explicit extensions. They should not be inferred from ordinary assistant text.
+
+
+## MCP and Sidecar History
+
+`tools.py` validates/expands local MCP configuration and uses the official SDK for stdio or Streamable HTTP discovery and calls. Its synchronous facade owns SDK contexts on an AnyIO portal. `tool_loop.py` adds a bounded sequence of model requests and sequential tool execution around the normalized backend event boundary. Model adapters preserve complete native tool calls and reasoning continuation data while continuing to stream answer text.
+
+`history.py` owns UUID references and versioned JSONLiteDB records, always forcing SQLite `DELETE` journal mode with WAL disabled. The Markdown path plus `.db` identifies the sidecar. The conversation writer persists references after database commits; parsing expands completed exchanges into native history without executing them. Sidecars are reserved for MCP tool-call history and future client tool integrations. Reasoning alone never creates a sidecar, even with MCP configured. A sidecar is created only after the model requests a tool call. Reasoning returned during that tool exchange, including the final answer after execution, is retained for native replay in all display modes. Reasoning from a turn without tool calls remains display-only and is not replayed. This is the current storage policy, not a requirement of the sidecar format; revisit it if general provider-native state replay is added. Tool exchanges and native reasoning have separate records, referenced together under `Tools` with `[@sidecar reasoning](uuid)` and `[@sidecar tool exchange](uuid)`. Their payloads are reassembled in native order once. Native reasoning from the final answer after tool execution has a standalone `Tools` reference whose record retains assistant metadata and ordering; it is replayed on later calls. `Reasoning` display blocks have no replay references and are never a native input source.
+
+Markdown controls inclusion/order and editable assistant prose; sidecars supply native grouping, calls/results, and continuation data. Unreferenced records are ignored. Backend changes with native tool history are rejected. Incomplete exchanges stop replay, avoiding automatic retries of uncertain external effects. File helpers copy/move the idle conversation pair and protect destination collisions. Neither SQLite transactions nor paired file operations make Markdown/database updates jointly atomic. See [MCP documentation](../mcp.md) for the user contract and recovery behavior.
+
+
+### Final Answers and User Blocks
+
+Responses and Messages adapters recover text from a completed native response when no answer text deltas were emitted, without duplicating streamed text. A tool loop requires a final answer; earlier assistant preambles cannot hide an empty or reasoning-only final response. Chat finalization writes an empty `User` block even on failure or interruption, preserving partial text/history and propagating the original error. Incomplete tool records remain non-replayable despite the final user marker.

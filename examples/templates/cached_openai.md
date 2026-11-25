@@ -1,7 +1,8 @@
 # {AUTO_TITLE}
 
 ```toml
-model = "openai/gpt-5-mini"
+[llm]
+model = "openai/gpt-6-luna"
 max_output_tokens = 16000
 reasoning = { effort = "medium" }
 # OpenAI automatically caches eligible repeated prefixes.

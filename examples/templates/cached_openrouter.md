@@ -1,7 +1,8 @@
 # {AUTO_TITLE}
 
 ```toml
-model = "openrouter/anthropic/claude-sonnet-4.6"
+[llm]
+model = "openrouter/anthropic/claude-haiku-5.5"
 max_tokens = 16000
 reasoning = { effort = "medium" }
 # Automatic prefix caching for repeated questions about long context.

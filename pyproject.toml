@@ -15,6 +15,9 @@ authors = [
 dependencies = [
     "any-llm-sdk>=1.27.0",
     "python-dotenv",
+    "mcp>=2.3.0,<3",
+    "jsonlitedb>=0.6.0",
+    "jsonschema>=4.20",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",

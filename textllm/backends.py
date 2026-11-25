@@ -1,6 +1,7 @@
 """Streaming model adapters and provider-independent response events."""
 
 import base64
+import copy
 import json
 import os
 import re
@@ -158,11 +159,26 @@ def iter_completion_text(*, model, messages, settings):
     if provider:
         completion_kwargs["provider"] = provider
 
+    completion_kwargs["messages"] = _completion_messages(messages)
     stream = completion(**completion_kwargs)
     for chunk in stream:
         text = _chunk_text(chunk)
         usage = _chunk_usage(chunk)
-        yield text, usage
+        delta = _object_get((_object_get(chunk, "choices", []) or [{}])[0], "delta", {})
+        finish = _object_get(
+            (_object_get(chunk, "choices", []) or [{}])[0], "finish_reason"
+        )
+        yield _CompletionText(text, delta, finish), usage
+
+
+class _CompletionText(str):
+    """String-compatible completion delta with native continuation metadata."""
+
+    def __new__(cls, text, delta, finish):
+        value = super().__new__(cls, text)
+        value.delta = _plain_mapping(delta) or {}
+        value.finish = finish
+        return value
 
 
 def _object_get(value, key, default=None):
@@ -175,7 +191,7 @@ def _plain_mapping(value):
     if value is None or isinstance(value, dict):
         return value
     if hasattr(value, "model_dump"):
-        return value.model_dump()
+        return value.model_dump(mode="json", by_alias=True, exclude_none=True)
     try:
         return dict(value)
     except (TypeError, ValueError):
@@ -187,6 +203,18 @@ def _responses_messages(messages):
 
     result = []
     for message in messages:
+        if "_native" in message:
+            result.extend(_native_items(message, "responses"))
+            continue
+        if message["role"] == "tool":
+            result.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": message["tool_call_id"],
+                    "output": message["content"],
+                }
+            )
+            continue
         content = message["content"]
         if not isinstance(content, list):
             result.append(message.copy())
@@ -307,6 +335,28 @@ def _messages_request(messages):
     for message in messages:
         role = message["role"]
         content = message["content"]
+        if "_native" in message:
+            result.append(
+                {"role": "assistant", "content": _native_items(message, "messages")}
+            )
+            continue
+        if role == "tool":
+            block = {
+                "type": "tool_result",
+                "tool_use_id": message["tool_call_id"],
+                "content": content,
+                "is_error": message.get("is_error", False),
+            }
+            if (
+                result
+                and result[-1]["role"] == "user"
+                and isinstance(result[-1]["content"], list)
+                and all(b.get("type") == "tool_result" for b in result[-1]["content"])
+            ):
+                result[-1]["content"].append(block)
+            else:
+                result.append({"role": "user", "content": [block]})
+            continue
         if role in ("system", "developer"):
             system_parts.append(_message_text(message))
             continue
@@ -387,12 +437,20 @@ def iter_responses_events(*, model, messages, settings):
     if provider:
         kwargs["provider"] = provider
 
+    output_items = []
+    streamed_text = False
     for event in responses(**kwargs):
         event_type = _object_get(event, "type", "")
+        if event_type == "response.output_item.done":
+            output_items.append(_plain_mapping(_object_get(event, "item")))
         if event_type == "response.output_text.delta":
-            yield ModelEvent("output_text_delta", text=_object_get(event, "delta", ""))
+            text = _object_get(event, "delta", "")
+            streamed_text |= bool(text)
+            yield ModelEvent("output_text_delta", text=text)
         elif event_type == "response.refusal.delta":
-            yield ModelEvent("output_text_delta", text=_object_get(event, "delta", ""))
+            text = _object_get(event, "delta", "")
+            streamed_text |= bool(text)
+            yield ModelEvent("output_text_delta", text=text)
         elif event_type == "response.reasoning_summary_text.delta":
             yield ModelEvent(
                 "reasoning_summary_delta",
@@ -406,7 +464,21 @@ def iter_responses_events(*, model, messages, settings):
             if citation := _citation(_object_get(event, "annotation")):
                 yield ModelEvent("citation", data=citation)
         elif event_type == "response.completed":
-            response = _object_get(event, "response")
+            response = _plain_mapping(_object_get(event, "response")) or {}
+            if not response.get("output") and output_items:
+                response["output"] = output_items
+            if not streamed_text:
+                for item in response.get("output", []):
+                    if _object_get(item, "type") != "message":
+                        continue
+                    for part in _object_get(item, "content", []) or []:
+                        kind = _object_get(part, "type")
+                        field = {"output_text": "text", "refusal": "refusal"}.get(kind)
+                        if field and (text := _object_get(part, field, "")):
+                            yield ModelEvent(
+                                "output_text_delta", text=text,
+                                data={"from_completed": True},
+                            )
             for citation in _response_citations(response):
                 yield ModelEvent("citation", data=citation)
             usage = _plain_mapping(_object_get(response, "usage"))
@@ -513,6 +585,10 @@ def iter_messages_events(*, model, messages, settings):
             call_kwargs["api_key"] = api_key
 
     usage = None
+    native_blocks = {}
+    partial_inputs = {}
+    stop_reason = None
+    streamed_text = False
     for event in create_message(**call_kwargs):
         event_type = _object_get(event, "type", "")
         if event_type == "message_start":
@@ -520,13 +596,20 @@ def iter_messages_events(*, model, messages, settings):
                 usage, _object_get(_object_get(event, "message"), "usage")
             )
         elif event_type == "message_delta":
+            stop_reason = _object_get(
+                _object_get(event, "delta", {}), "stop_reason", stop_reason
+            )
             usage = _merge_usage(usage, _object_get(event, "usage"))
         elif event_type == "content_block_start":
             content_block = _object_get(event, "content_block")
             block_type = _object_get(content_block, "type")
+            native_blocks[_object_get(event, "index", 0)] = copy.deepcopy(
+                _plain_mapping(content_block) or {}
+            )
             if block_type == "text" and (
                 text := _object_get(content_block, "text", "")
             ):
+                streamed_text = True
                 yield ModelEvent("output_text_delta", text=text)
             elif block_type == "thinking" and (
                 thinking := _object_get(content_block, "thinking", "")
@@ -544,10 +627,23 @@ def iter_messages_events(*, model, messages, settings):
         elif event_type == "content_block_delta":
             delta = _object_get(event, "delta")
             delta_type = _object_get(delta, "type")
-            if delta_type == "text_delta":
-                yield ModelEvent(
-                    "output_text_delta", text=_object_get(delta, "text", "")
+            index = _object_get(event, "index", 0)
+            block = native_blocks.get(index, {})
+            field = {
+                "text_delta": "text",
+                "thinking_delta": "thinking",
+                "signature_delta": "signature",
+            }.get(delta_type)
+            if field:
+                block[field] = block.get(field, "") + _object_get(delta, field, "")
+            if delta_type == "input_json_delta":
+                partial_inputs[index] = partial_inputs.get(index, "") + _object_get(
+                    delta, "partial_json", ""
                 )
+            if delta_type == "text_delta":
+                text = _object_get(delta, "text", "")
+                streamed_text |= bool(text)
+                yield ModelEvent("output_text_delta", text=text)
             elif delta_type == "thinking_delta":
                 yield ModelEvent(
                     "reasoning_summary_delta",
@@ -570,6 +666,21 @@ def iter_messages_events(*, model, messages, settings):
                     if input_tokens is not None and output_tokens is not None:
                         usage["total_tokens"] = input_tokens + output_tokens
                 yield ModelEvent("usage", data=usage)
+            message = _plain_mapping(message) or {}
+            if not message.get("content"):
+                for index, partial in partial_inputs.items():
+                    native_blocks[index]["input"] = json.loads(partial)
+                message["content"] = [native_blocks[k] for k in sorted(native_blocks)]
+            message.setdefault("stop_reason", stop_reason)
+            if not streamed_text:
+                for block in message.get("content", []):
+                    if _object_get(block, "type") == "text" and (
+                        text := _object_get(block, "text", "")
+                    ):
+                        yield ModelEvent(
+                            "output_text_delta", text=text,
+                            data={"from_completed": True},
+                        )
             yield ModelEvent("completed", data=message)
 
 
@@ -577,16 +688,49 @@ def iter_model_events(*, backend, model, messages, settings):
     """Yield normalized model events from the configured API backend."""
 
     if backend == "completion":
+        calls = {}
+        native = {"role": "assistant", "content": ""}
+        finish = None
         for text, usage in iter_completion_text(
             model=model,
             messages=messages,
             settings=settings,
         ):
+            delta = getattr(text, "delta", {})
+            finish = getattr(text, "finish", None) or finish
+            native["content"] += str(text)
+            for key in ("reasoning_content", "reasoning", "reasoning_details"):
+                if delta.get(key) is not None:
+                    value = delta[key]
+                    if isinstance(value, str):
+                        native[key] = native.get(key, "") + value
+                        yield ModelEvent("reasoning_summary_delta", text=value)
+                    elif isinstance(value, list):
+                        native.setdefault(key, []).extend(value)
+            for part in delta.get("tool_calls") or []:
+                index = _object_get(part, "index", 0)
+                call = calls.setdefault(
+                    index,
+                    {
+                        "id": "",
+                        "type": "function",
+                        "function": {"name": "", "arguments": ""},
+                    },
+                )
+                if _object_get(part, "id"):
+                    call["id"] = _object_get(part, "id")
+                function = _object_get(part, "function", {})
+                for key in ("name", "arguments"):
+                    call["function"][key] += _object_get(function, key, "") or ""
             if text:
-                yield ModelEvent("output_text_delta", text=text)
+                yield ModelEvent("output_text_delta", text=str(text))
             if usage:
                 yield ModelEvent("usage", data=_plain_mapping(usage))
-        yield ModelEvent("completed")
+        if calls:
+            if finish not in ("tool_calls", "stop"):
+                raise ValueError("Incomplete model tool-call stream")
+            native["tool_calls"] = [calls[k] for k in sorted(calls)]
+        yield ModelEvent("completed", data=native)
         return
 
     if backend == "responses":
@@ -680,3 +824,121 @@ def _sources_markdown(citations):
     if not lines:
         return ""
     return "\n\n### Sources\n\n" + "\n".join(lines)
+
+
+def native_turn(backend, response):
+    """Extract replay data and complete tool calls from a native response.
+
+    Parameters
+    ----------
+    backend : str
+        Model API backend.
+    response : object
+        Completed provider response.
+
+    Returns
+    -------
+    tuple
+        Native replay payload and normalized calls.
+    """
+    response = _plain_mapping(response) or {}
+    calls = []
+    if backend == "completion":
+        native = response
+        for call in response.get("tool_calls") or []:
+            function = call["function"]
+            calls.append(
+                {
+                    "id": call["id"],
+                    "name": function["name"],
+                    "arguments": function["arguments"],
+                }
+            )
+    elif backend == "responses":
+        native = response.get("output", [])
+        for item in native:
+            if item.get("type") == "function_call":
+                calls.append(
+                    {
+                        "id": item["call_id"],
+                        "name": item["name"],
+                        "arguments": item["arguments"],
+                    }
+                )
+    else:
+        native = response.get("content", [])
+        for block in native:
+            if block.get("type") == "tool_use":
+                calls.append(
+                    {
+                        "id": block["id"],
+                        "name": block["name"],
+                        "arguments": json.dumps(block["input"]),
+                    }
+                )
+        if calls and response.get("stop_reason") not in (None, "tool_use"):
+            raise ValueError("Incomplete Messages tool response")
+    ids = [call["id"] for call in calls]
+    if len(set(ids)) != len(ids) or any(not key for key in ids):
+        raise ValueError("Model returned invalid or duplicate tool call IDs")
+    return native, calls
+
+
+def _native_items(message, backend):
+    if message.get("_backend") != backend:
+        raise ValueError("Cannot replay native history with a different backend")
+    native = copy.deepcopy(message["_native"])
+    visible = message["content"]
+    if backend == "completion":
+        native["role"] = "assistant"
+        native["content"] = visible or None
+        return native
+    # Markdown owns displayed assistant text. Replace native text in place;
+    # retain reasoning, tool calls, signatures and other native content order.
+    visible_blocks = None
+    if backend == "messages":
+        visible_blocks = _messages_request([{"role": "assistant", "content": visible}])[
+            1
+        ][0]["content"]
+        if isinstance(visible_blocks, str):
+            visible_blocks = [{"type": "text", "text": visible_blocks}]
+    written = False
+    result = []
+    for item in native:
+        if backend == "responses":
+            # Older sidecars may contain SDK Python field names and absent
+            # optional fields from model_dump() rather than API wire data.
+            # Repair these on replay without modifying stored history or JSON
+            # tool arguments, where names such as async_ are legitimate data.
+            if item.get("type") == "function_call" and "async_" in item:
+                item.setdefault("async", item.pop("async_"))
+            item = {key: value for key, value in item.items() if value is not None}
+        is_text = item.get("type") == ("message" if backend == "responses" else "text")
+        if is_text:
+            if visible and not written:
+                if backend == "responses":
+                    message = {"role": "assistant", "content": visible}
+                    if "phase" in item:
+                        message["phase"] = item["phase"]
+                    result.append(message)
+                else:
+                    result.extend(visible_blocks)
+                written = True
+        else:
+            result.append(item)
+    if visible and not written:
+        if backend == "responses":
+            result.insert(0, {"role": "assistant", "content": visible})
+        else:
+            result[0:0] = visible_blocks
+    return result
+
+
+def _completion_messages(messages):
+    result = []
+    for message in messages:
+        if "_native" in message:
+            result.append(_native_items(message, "completion"))
+        else:
+            result.append({k: v for k, v in message.items() if k != "is_error"})
+    return result

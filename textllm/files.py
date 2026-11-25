@@ -3,6 +3,7 @@
 import os
 import re
 import shlex
+import shutil
 import subprocess
 
 from .config import CONFIG, _test_mode_enabled, log
@@ -129,7 +130,7 @@ def uniqueify_filepath(filepath):
     base, ext = os.path.splitext(filename)
 
     c = 0
-    while os.path.exists(filepath):
+    while os.path.lexists(filepath) or os.path.lexists(str(filepath) + ".db"):
         c += 1
         if c >= 100:
             raise ValueError(f"Too many for {filepath0!r}")
@@ -138,3 +139,78 @@ def uniqueify_filepath(filepath):
         filepath = os.path.join(dirname, new)
     log.debug(f"{filepath0!r} required {c} iterations for unique name: {filepath!r}")
     return filepath
+
+
+def copy_conversation(source, destination):
+    """Copy Markdown and its sidecar as an independent conversation.
+
+    Parameters
+    ----------
+    source, destination : str or path-like
+        Conversation paths. Destination files must not exist.
+
+    Returns
+    -------
+    str
+        Destination conversation path.
+    """
+    return _transfer_conversation(source, destination, move=False)
+
+
+def move_conversation(source, destination):
+    """Move Markdown and its sidecar, rolling back ordinary rename failures.
+
+    Parameters
+    ----------
+    source, destination : str or path-like
+        Conversation paths. Destination files must not exist.
+
+    Returns
+    -------
+    str
+        Destination conversation path.
+    """
+    return _transfer_conversation(source, destination, move=True)
+
+
+def _transfer_conversation(source, destination, *, move):
+    source, destination = os.fspath(source), os.fspath(destination)
+    if os.path.abspath(source) == os.path.abspath(destination):
+        raise ValueError("Conversation source and destination must differ")
+    if os.path.lexists(destination) or os.path.lexists(destination + ".db"):
+        raise FileExistsError("Conversation destination or sidecar already exists")
+    sidecar_exists = os.path.exists(source + ".db")
+    if sidecar_exists:
+        # Opening through Sidecar disables WAL, checkpoints an existing WAL
+        # database, and closes the connection before filesystem operations.
+        from .history import Sidecar
+
+        db = Sidecar(source)._open()
+        db.close()
+    created = []
+    try:
+        # Exclusive creation avoids overwriting even if a destination appears
+        # after the preflight check. Keep the source intact until both copies
+        # are durable. File operations require an idle conversation.
+        for src, dst in [(source, destination)] + (
+            [(source + ".db", destination + ".db")] if sidecar_exists else []
+        ):
+            with open(src, "rb") as reader, open(dst, "xb") as writer:
+                created.append(dst)
+                shutil.copyfileobj(reader, writer)
+                writer.flush()
+                os.fsync(writer.fileno())
+        if move:
+            # Retain a complete destination if deleting either source fails.
+            for src in ([source + ".db"] if sidecar_exists else []) + [source]:
+                os.unlink(src)
+    except BaseException:
+        if (
+            not move
+            or os.path.exists(source)
+            and (not sidecar_exists or os.path.exists(source + ".db"))
+        ):
+            for dst in created:
+                os.unlink(dst)
+        raise
+    return destination

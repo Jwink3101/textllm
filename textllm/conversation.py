@@ -1,10 +1,10 @@
 """Conversation lifecycle, model calls, and streamed Markdown updates."""
 
 import base64
+from contextlib import closing
 import mimetypes
 import os
 import re
-import shutil
 import sys
 from functools import cached_property
 from urllib.parse import urlsplit
@@ -22,11 +22,19 @@ from .config import (
     CONFIG,
     TITLE_SYSTEM_PROMPT,
     _merge_settings,
+    _resolve_settings,
+    _normalize_settings,
+    _has_legacy_settings,
+    _LEGACY_SETTINGS_WARNING,
+    _LOCAL_SETTINGS_TABLES,
     _test_mode_enabled,
     log,
 )
+from .history import Sidecar, references, replay_exchange, replay_reasoning
+from .tools import mcp_config, tool_limits
+from .tool_loop import iter_tool_events
 from .output import StreamOutput
-from .files import clean_filepath, title2filename, uniqueify_filepath
+from .files import clean_filepath, title2filename, uniqueify_filepath, move_conversation
 from .markdown import (
     LOCAL_ONLY_ROLES,
     ROLE_MARKER_RE,
@@ -59,13 +67,26 @@ class Conversation:
 
     def __init__(self, filepath, *, overrides=None):
         self.filepath = self.filepath0 = filepath
-        self._settings_overrides = _merge_settings({}, overrides or {})
+        self._legacy_overrides = _has_legacy_settings(overrides or {})
+        self._settings_overrides = _normalize_settings(overrides or {})
 
         # Read and strip trailing whitespace before parsing.
         with open(self.filepath, "rt") as fp:
             self.text = fp.read().rstrip()
 
         self.parsed = loads(self.text)
+        self._settings_source = _merge_settings(
+            {"model": CONFIG.TEXTLLM_DEFAULT_MODEL}
+            | _normalize_settings(self.parsed["settings"]),
+            self._settings_overrides,
+        )
+        self._resolved_settings = _resolve_settings(self._settings_source)
+        local = self._resolved_settings.get("textllm", {})
+        if local.get("tools_display", "comment") not in ("comment", "block"):
+            raise ValueError("textllm.tools_display must be 'comment' or 'block'")
+        self._local_settings = local
+        self.mcp_servers = mcp_config(local.get("mcp", []), expand=False)
+        self.tool_limits = tool_limits(local.get("tools", {}))
         self.messages = self.process_conversation()
 
     def call_llm(
@@ -111,8 +132,18 @@ class Conversation:
             if message.get("role") not in LOCAL_ONLY_ROLES
         ]
 
-        settings = _merge_settings(self.settings, new_settings)
-        textllm_settings = settings.pop("textllm", {})
+        effective = self.settings  # Preserve one legacy warning per invocation.
+        source = getattr(self, "_settings_source", effective)
+        raw_settings = _merge_settings(source, new_settings)
+        settings = (
+            _resolve_settings(raw_settings)
+            if new_settings
+            else _merge_settings(effective, {})
+        )
+        local_settings = {
+            name: settings.pop(name, {}) for name in _LOCAL_SETTINGS_TABLES
+        }
+        textllm_settings = local_settings["textllm"]
         backend = textllm_settings.get("backend", "completion")
         reasoning_summary_mode = textllm_settings.get("reasoning_summary", "omit")
         if reasoning_summary_mode not in ("omit", "block", "stderr"):
@@ -138,10 +169,23 @@ class Conversation:
             stream_options = dict(settings.get("stream_options") or {})
             stream_options["include_usage"] = True
             settings["stream_options"] = stream_options
-        log.debug(f"Settings {settings}")
+        # Log unresolved values, so interpolation cannot expose credentials
+        # embedded in arbitrary provider settings. Local settings stay omitted.
+        log_settings = {
+            k: v for k, v in raw_settings.items() if k not in _LOCAL_SETTINGS_TABLES
+        }
+        if title_call:
+            for key in ("tools", "tool_choice", "max_tool_calls"):
+                log_settings.pop(key, None)
+            log_settings = _merge_settings(
+                log_settings, raw_settings.get("textllm", {}).get("title", {})
+            )
+            for key in ("tools", "tool_choice", "max_tool_calls"):
+                log_settings.pop(key, None)
+        log.debug("Settings %s", _settings_log_view(log_settings))
 
         model = settings.pop("model")  # Will KeyError if not set as expected
-        log.debug(f"{model = }")
+        log.debug("model = %r", log_settings.get("model"))
 
         with StreamOutput(print_stream) as output:
             content = []
@@ -151,47 +195,68 @@ class Conversation:
             last_tool_status = None
             if print_stream:
                 output.write("\n")
-            for event in iter_model_events(
-                backend=backend,
-                model=model,
-                messages=messages,
-                settings=settings,
-            ):
-                if event.kind == "output_text_delta":
-                    content.append(event.text)
-                    if print_stream:
-                        output.write(event.text)
-                    if stream_writer:
-                        stream_writer.write(event.text)
-                        stream_writer.flush()
-                elif event.kind == "reasoning_summary_delta":
-                    reasoning_summary.append(event.text)
-                    if (
-                        reasoning_summary_mode == "block"
-                        and stream_writer
-                        and hasattr(stream_writer, "write_reasoning")
-                    ):
-                        stream_writer.write_reasoning(event.text)
-                        stream_writer.flush()
-                elif event.kind == "citation":
-                    citations.append(event.data)
-                elif event.kind == "usage":
-                    usage_metadata = _merge_usage(usage_metadata, event.data)
-                elif event.kind == "tool_status":
-                    if event.data != last_tool_status:
-                        log.info(f"Web search {event.data}")
-                        last_tool_status = event.data
-                elif event.kind == "error":
-                    error = _object_get(event.data, "error", event.data)
-                    response = _object_get(event.data, "response")
-                    if response is not None:
-                        error = _object_get(response, "error") or _object_get(
-                            response, "incomplete_details", error
+            event_stream = (
+                iter_model_events(
+                    backend=backend, model=model, messages=messages, settings=settings
+                )
+                if title_call or stream_writer is None
+                else iter_tool_events(
+                    events=iter_model_events,
+                    backend=backend,
+                    model=model,
+                    messages=messages,
+                    settings=settings,
+                    servers=mcp_config(textllm_settings.get("mcp", []), expand=False),
+                    limits=tool_limits(textllm_settings.get("tools", {})),
+                    filepath=self.filepath,
+                    persist=hasattr(stream_writer, "write_reference"),
+                )
+            )
+            with closing(event_stream):
+                for event in event_stream:
+                    if event.kind == "output_text_delta":
+                        content.append(event.text)
+                        if print_stream:
+                            output.write(event.text)
+                        if stream_writer:
+                            stream_writer.write(event.text)
+                            stream_writer.flush()
+                    elif event.kind == "reasoning_summary_delta":
+                        reasoning_summary.append(event.text)
+                        if (
+                            reasoning_summary_mode == "block"
+                            and stream_writer
+                            and hasattr(stream_writer, "write_reasoning")
+                        ):
+                            stream_writer.write_reasoning(event.text)
+                            stream_writer.flush()
+                    elif event.kind == "history_reference":
+                        if hasattr(stream_writer, "write_reference"):
+                            stream_writer.write_reference(
+                                event.data["role"],
+                                event.data["key"],
+                                event.data.get("description"),
+                            )
+                            stream_writer.flush()
+                    elif event.kind == "citation":
+                        citations.append(event.data)
+                    elif event.kind == "usage":
+                        usage_metadata = _merge_usage(usage_metadata, event.data)
+                    elif event.kind == "tool_status":
+                        if event.data != last_tool_status:
+                            log.info(f"Web search {event.data}")
+                            last_tool_status = event.data
+                    elif event.kind == "error":
+                        error = _object_get(event.data, "error", event.data)
+                        response = _object_get(event.data, "response")
+                        if response is not None:
+                            error = _object_get(response, "error") or _object_get(
+                                response, "incomplete_details", error
+                            )
+                        message = _object_get(error, "message") or _object_get(
+                            error, "reason", error
                         )
-                    message = _object_get(error, "message") or _object_get(
-                        error, "reason", error
-                    )
-                    raise RuntimeError(f"Model response failed: {message}")
+                        raise RuntimeError(f"Model response failed: {message}")
 
             response_text = "".join(content)
             if not response_text:
@@ -222,7 +287,7 @@ class Conversation:
         )
 
         if reasoning_summary_mode == "stderr" and reasoning_summary:
-            log.info("Reasoning summary: %s", "".join(reasoning_summary))
+            print("Reasoning summary: " + "".join(reasoning_summary), file=sys.stderr)
 
         token_usage = _format_token_usage(response.usage_metadata)
         if token_mode == "stderr" and token_usage:
@@ -266,48 +331,72 @@ class Conversation:
 
         with open(self.filepath, "r+") as file:
             self._seek_append_point(file)
-            stream_writer = self._ResponseBlockWriter(file, header_level)
-
-            response = self.call_llm(
-                messages=self.messages,
-                print_stream=True,
-                stream_writer=stream_writer,
-                tokens=tokens,
+            stream_writer = self._ResponseBlockWriter(
+                file,
+                header_level,
+                tools_display=self.settings.get("textllm", {}).get(
+                    "tools_display", "comment"
+                ),
             )
 
-            token_mode = self.settings.get("textllm", {}).get("tokens", "none")
-            if tokens is not None:
-                token_mode = tokens
-            token_usage = _format_token_usage(response.usage_metadata)
-            if token_mode == "note" and token_usage:
-                file.write(
-                    f"\n\n{_role_marker('Note', header_level)}  \n\n" + token_usage
+            try:
+                response = self.call_llm(
+                    messages=self.messages,
+                    print_stream=True,
+                    stream_writer=stream_writer,
+                    tokens=tokens,
                 )
 
-            file.write(f"\n\n{_role_marker('User', header_level)}  \n\n")
-            file.flush()
+                token_mode = self.settings.get("textllm", {}).get("tokens", "none")
+                if tokens is not None:
+                    token_mode = tokens
+                token_usage = _format_token_usage(response.usage_metadata)
+                if token_mode == "note" and token_usage:
+                    stream_writer.finish()
+                    file.write(
+                        f"\n\n{_role_marker('Note', header_level)}\n\n" + token_usage
+                    )
+            finally:
+                stream_writer.finish()
+                # A completed, failed, or interrupted invocation always leaves
+                # an explicit place for the next user prompt.
+                file.write(f"\n\n{_role_marker('User', header_level)}\n\n")
+                file.flush()
 
         # Not really needed but in case I do more with it later
-        self.messages.append({"role": "assistant", "content": response.content})
+        with open(self.filepath, "rt") as file:
+            self.text = file.read().rstrip()
+        self.parsed = loads(self.text)
+        self.messages = self.process_conversation()
         log.info(f"Updated {self.filepath!r}")
 
     class _ResponseBlockWriter:
         """Write answer and reasoning blocks in model-event order."""
 
-        def __init__(self, file, header_level=0):
+        def __init__(self, file, header_level=0, *, tools_display="comment"):
             self.file = file
             self.header_level = header_level
             self.role = None
             self.at_line_start = True
+            self.after_reference = False
+            self.tools_display = tools_display
+            self.comment_open = False
 
         def _write_role(self, role, text, *, escape_role_markers=False):
             if not text:
                 return
             if self.role != role:
+                self.finish()
                 marker = _role_marker(role, self.header_level)
-                self.file.write(f"\n\n{marker}  \n\n")
+                self.comment_open = role == "Tools" and self.tools_display == "comment"
+                wrapper = "<!--\n" if self.comment_open else ""
+                self.file.write(f"\n\n{wrapper}{marker}\n\n")
                 self.role = role
                 self.at_line_start = True
+            elif self.after_reference:
+                self.file.write("\n\n")
+                self.at_line_start = True
+            self.after_reference = False
             if escape_role_markers:
                 prefix = "" if self.at_line_start else "x"
                 text = Conversation._escape_role_markers(prefix + text)[len(prefix) :]
@@ -320,8 +409,25 @@ class Conversation:
         def write_reasoning(self, text):
             self._write_role("Reasoning", text, escape_role_markers=True)
 
+        def write_reference(self, role, key, description=None):
+            label = "@sidecar" + (f" {description}" if description else "")
+            reference = f"[{label}]({key})"
+            if self.role == role and self.after_reference:
+                self.file.write("\n" + reference)
+                self.at_line_start = False
+            else:
+                self._write_role(role, reference)
+            self.after_reference = True
+
         def flush(self):
             self.file.flush()
+
+        def finish(self):
+            """Close any hidden Tools block before visible content or exit."""
+
+            if self.comment_open:
+                self.file.write("\n-->")
+                self.comment_open = False
 
     @staticmethod
     def _escape_role_markers(text):
@@ -389,10 +495,10 @@ class Conversation:
     @cached_property
     def settings(self):
         """dict: Effective settings, including invocation overrides and fallback model."""
-        return _merge_settings(
-            {"model": CONFIG.TEXTLLM_DEFAULT_MODEL} | self.parsed["settings"],
-            self._settings_overrides,
-        )
+        saved = self.parsed["settings"]
+        if self._legacy_overrides or _has_legacy_settings(saved):
+            log.warning(_LEGACY_SETTINGS_WARNING)
+        return _merge_settings(self._resolved_settings, {})
 
     read_settings = staticmethod(read_settings)
 
@@ -411,7 +517,50 @@ class Conversation:
             URL content blocks.
         """
         conversation = []
+        seen_references = set()
+        pending_final_assistant = None
+        backend = self._local_settings.get("backend", "completion")
         for item in self.parsed["conversation"]:
+            if item["role"] == "reasoning":
+                continue
+            if item["role"] == "tools":
+                keys = references(item["content"])
+                if item["role"] == "tools" and not keys:
+                    raise ValueError("Tools block requires a sidecar reference")
+                pending_reasoning = None
+                for key in keys:
+                    if key in seen_references:
+                        raise ValueError("Duplicate sidecar reference")
+                    seen_references.add(key)
+                    record = Sidecar(self.filepath).read(key)
+                    if record.get("kind") == "reasoning":
+                        if "assistant_native" in record:
+                            if pending_reasoning is not None:
+                                raise ValueError(
+                                    "Tool reasoning must precede its tool exchange"
+                                )
+                            replay_reasoning(conversation, record, backend)
+                            pending_final_assistant = conversation[-1]
+                            continue
+                        if pending_reasoning is not None:
+                            raise ValueError(
+                                "Multiple reasoning records before one tool exchange"
+                            )
+                        pending_reasoning = record
+                    elif record.get("kind") == "tools":
+                        replay_exchange(
+                            conversation, record, backend, pending_reasoning
+                        )
+                        pending_reasoning = None
+                    else:
+                        raise ValueError(
+                            "Tools reference must identify reasoning or a tool exchange"
+                        )
+                if pending_reasoning is not None:
+                    raise ValueError(
+                        "Tool reasoning must precede its tool exchange in the same Tools block"
+                    )
+                continue
             if item["role"] in LOCAL_ONLY_ROLES:
                 continue
 
@@ -473,7 +622,18 @@ class Conversation:
             for include in includes:
                 content[0]["text"] += self._included_attachment_text(include)
 
-            conversation.append({"role": item["role"], "content": content})
+            if (
+                item["role"] == "assistant"
+                and conversation
+                and conversation[-1] is pending_final_assistant
+                and not pending_final_assistant["content"]
+            ):
+                # A completed payload can place its native reference before
+                # the visible answer. Keep both in the same replay message.
+                pending_final_assistant["content"] = content
+            else:
+                conversation.append({"role": item["role"], "content": content})
+            pending_final_assistant = None
 
         return merge_message_runs(conversation)
 
@@ -546,7 +706,26 @@ class Conversation:
             return
 
         title_based_filepath = uniqueify_filepath(title_based_filepath)
-        shutil.move(self.filepath, title_based_filepath)
+        move_conversation(self.filepath, title_based_filepath)
 
         log.info(f"Rename by title {self.filepath!r} --> {title_based_filepath!r}")
         self.filepath = title_based_filepath
+
+
+def _settings_log_view(value):
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            name = key.lower()
+            sensitive = name in {
+                "api_key",
+                "token",
+                "authorization",
+                "password",
+                "secret",
+            } or name.endswith(("_api_key", "_token", "_password", "_secret"))
+            result[key] = "<redacted>" if sensitive else _settings_log_view(item)
+        return result
+    if isinstance(value, list):
+        return [_settings_log_view(item) for item in value]
+    return value

@@ -1,9 +1,42 @@
 # Changelog
 
+## 0.13.0 (2026-11-24)
+
+**Major Feature: MCP tool support** and required sidecar files (only needed for tools)
+
+MCP:
+
+- Connect MCP servers using a URL or command, with optional `bearer_token` authentication supplied literally or through `${NAME}` environment references. Available tools can be called across completion, Responses, and Messages backends.
+- Add a shared tool-execution and native-history replay layer, providing a foundation for future tool integrations beyond MCP.
+- Save tool history and associated reasoning in `conversation.md.db`, referenced from Markdown. Keep both files together when copying or moving a conversation. Reasoning alone does not create a sidecar.
+- Add MCP example templates and progress logs showing when tools run. See [MCP tools and sidecars](docs/mcp.md) for setup and usage.
+
+Other:
+
+- Expand `${NAME}` environment references throughout TOML configuration, including provider, local, title, nested, and override settings; creating a template does not require those variables to be set. See [environment references](readme.md#environment-references-in-toml) for escaping, types, and execution-time requirements.
+- Fix missing answers in some Responses/Messages streams, and leave a User block after failed or interrupted chat attempts.
+- Standardize OpenAI examples and templates on `openai/gpt-6-luna` and Anthropic examples on Claude Haiku 5.5, including OpenRouter routes.
+
+Minor:
+
+- Use timestamped, random UUIDv7 keys for new tool-history records without adding dependencies.
+- Hide newly written Tools blocks in HTML comments by default. Set `[textllm].tools_display = "block"` for visible blocks; both formats remain readable, including in mixed files. See [MCP tools and sidecars](docs/mcp.md#conversation-history) for compatibility details.
+- Show only names with `--list-templates`; repeat the flag to include paths, sources, and shadowed entries.
+- Order sidecar reasoning references before answers returned in the same completed Responses/Messages payload, grouping adjacent references into one Tools block while preserving earlier streamed text order.
+- Fix reasoning summaries requested with `reasoning_summary = "stderr"` being suppressed by logging verbosity.
+
+## 0.12.0 (2026-11-24)
+
+- Comment out temperature in the built-in template so new conversations use the provider default. Keep the rendered environment value (default `1.0`) available to uncomment; custom template placeholders remain supported.
+
+- Namespace provider settings under `[llm]`, keeping local behavior under `[textllm]`. Legacy root-level settings remain supported with one deprecation warning per invocation; explicit `[llm]` values win within a settings source, and later command-line overrides still win across sources.
+- Update built-in and example templates, add a settings migration guide, and consolidate historical backend migration guides.
+
 ## 0.11.1 (2026-11-23)
 
 - Replace SQLite continuation state with `state.json`, written atomically with one-space indentation and no locks. Concurrent updates may overwrite each other; existing SQLite pointers are not migrated.
 - Add `$TEXTLLM_TEMP_DIR` to select the base directory for temporary conversations and continuation state, including through environment files.
+
 ## 0.11.0 (2026-11-19)
 
 - Add `-c` / `--continue` to resume the last regular conversation across working directories, tracking textllm renames with disposable SQLite state. An explicit filename with `--continue` must already exist.

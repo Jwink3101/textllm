@@ -1,7 +1,8 @@
 # {AUTO_TITLE}
 
 ```toml
-model = "anthropic/claude-sonnet-4-6"
+[llm]
+model = "anthropic/claude-haiku-5-5"
 max_tokens = 16000
 thinking = { type = "adaptive" }
 output_config = { effort = "medium" }
